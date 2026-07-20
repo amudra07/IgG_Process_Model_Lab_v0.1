@@ -36,6 +36,13 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## GitHub / Streamlit deployment
+
+Replace all repository files from this v0.2 package together, especially both
+`app.py` and `model.py`, then reboot the Streamlit app. The app includes a
+versioned cache key and a prediction-schema adapter so an older cached v0.1
+model cannot cause missing v0.2 concentration fields during startup.
+
 macOS/Linux:
 
 ```bash

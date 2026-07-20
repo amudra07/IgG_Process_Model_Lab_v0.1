@@ -20,6 +20,59 @@ from model import (
     train_mock_models,
 )
 
+APP_VERSION = "0.2"
+PREDICTION_SCHEMA = "0.2-interaction-capacity-20260720"
+
+
+def _with_v02_concentration(frame: pd.DataFrame, prediction: pd.DataFrame) -> pd.DataFrame:
+    """Attach v0.2 deterministic outputs even if a stale v0.1 model is cached.
+
+    Streamlit deployments can briefly retain an older cached ModelBundle while a
+    new app file is starting. Keeping the deterministic concentration layer here
+    makes that transition safe and guarantees one prediction schema for every tab.
+    """
+    result = prediction.copy()
+    total_excipient = frame[[
+        "sucrose_mg_ml", "trehalose_mg_ml", "hpbcd_mg_ml", "pvp_mg_ml"
+    ]].sum(axis=1)
+    igg_fraction = frame["feed_igg_mg_ml"] / (frame["feed_igg_mg_ml"] + total_excipient).clip(lower=1e-9)
+    nominal = frame["powder_added_mg"] * igg_fraction / frame["mct_volume_ml"].clip(lower=1e-9)
+
+    sucrose_mM = frame["sucrose_mg_ml"] * 1_000.0 / 342.30
+    hpbcd_mM = frame["hpbcd_mg_ml"] * 1_000.0 / 1_400.0
+    theta_sucrose = sucrose_mM / (88.63 + sucrose_mM)
+    theta_hpbcd = hpbcd_mM**2 / (2.5**2 + hpbcd_mM**2)
+
+    reference_sucrose = 60.0 * (1.0 / 0.81 - 1.0)
+    reference_hpbcd = 60.0 * (1.0 / 0.75 - 1.0) - reference_sucrose
+    ref_sucrose_mM = reference_sucrose * 1_000.0 / 342.30
+    ref_hpbcd_mM = reference_hpbcd * 1_000.0 / 1_400.0
+    reference_interaction = (
+        ref_sucrose_mM / (88.63 + ref_sucrose_mM)
+        * ref_hpbcd_mM**2 / (2.5**2 + ref_hpbcd_mM**2)
+    )
+    interaction = ((theta_sucrose * theta_hpbcd) / reference_interaction).clip(0.0, 2.5)
+    assay_recovery = (0.887 + (0.926 - 0.887) * interaction).clip(0.80, 0.98)
+    beta = 550.0 / (400.0 * (0.75 * 0.926) / (0.81 * 0.887)) - 1.0
+    capacity = 400.0 * (igg_fraction * assay_recovery) / (0.81 * 0.887) * (1.0 + beta * interaction)
+
+    result["nominal_igg_mg_ml"] = nominal.to_numpy()
+    result["sucrose_hpbcd_interaction_norm"] = interaction.to_numpy()
+    result["calibrated_assay_recovery_pct"] = (100.0 * assay_recovery).to_numpy()
+    result["interaction_capacity_mg_ml"] = capacity.to_numpy()
+    result["predicted_achievable_igg_mg_ml"] = np.minimum(nominal, capacity).to_numpy()
+    return result
+
+
+class PredictionSchemaAdapter:
+    """Normalize cached or current model bundles to the v0.2 output schema."""
+
+    def __init__(self, model_bundle):
+        self.model_bundle = model_bundle
+
+    def predict(self, frame: pd.DataFrame) -> pd.DataFrame:
+        return _with_v02_concentration(frame, self.model_bundle.predict(frame))
+
 
 st.set_page_config(
     page_title="IgG Process Model Lab",
@@ -65,13 +118,13 @@ st.markdown(
 
 
 @st.cache_resource
-def load_pipeline():
+def load_pipeline(prediction_schema: str):
     mock_data = generate_mock_data()
-    models = train_mock_models(mock_data)
+    models = PredictionSchemaAdapter(train_mock_models(mock_data))
     return mock_data, models
 
 
-mock_data, models = load_pipeline()
+mock_data, models = load_pipeline(PREDICTION_SCHEMA)
 defaults = default_batch()
 
 
@@ -111,7 +164,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown("---")
-    st.caption("Version 0.1 · Mock-data exploration only")
+    st.caption(f"Version {APP_VERSION} · Mock-data exploration only")
 
 
 def formulation_inputs() -> dict[str, float]:
