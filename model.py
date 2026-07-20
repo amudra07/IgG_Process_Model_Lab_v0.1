@@ -19,10 +19,10 @@ RANDOM_SEED = 20260720
 
 MOCK_RANGES = {
     "feed_igg_mg_ml": (45.0, 75.0),
-    "sucrose_mg_ml": (0.0, 50.0),
-    "trehalose_mg_ml": (0.0, 50.0),
-    "hpbcd_mg_ml": (0.0, 75.0),
-    "pvp_mg_ml": (0.0, 15.0),
+    "sucrose_mg_ml": (0.0, 30.0),
+    "trehalose_mg_ml": (0.0, 30.0),
+    "hpbcd_mg_ml": (0.0, 30.0),
+    "pvp_mg_ml": (0.0, 10.0),
     "feed_viscosity_mpas": (10.0, 80.0),
     "feed_hmw_pct": (0.30, 1.50),
     "feed_monomer_pct": (97.0, 99.4),
@@ -43,6 +43,54 @@ FIXED_PROCESS = {
     "feed_batch_volume_ml": 100.0,
 }
 
+# Literature-informed interaction priors. Sucrose Kd is the 293 K value from
+# Zhang et al., mAbs (2023), DOI: 10.1080/19420862.2023.2212416. The 2.5 mM
+# HPBCD scale is based on the onset of strong interfacial protection reported by
+# Serno et al., J Pharm Sci (2010), DOI: 10.1002/jps.21931. The HPBCD molecular
+# weight is grade-dependent; 1,400 g/mol is a provisional conversion value.
+SUCROSE_MW_G_MOL = 342.30
+TREHALOSE_MW_G_MOL = 342.30
+HPBCD_ASSUMED_MW_G_MOL = 1_400.0
+SUCROSE_KD_293K_MM = 88.63
+HPBCD_INTERFACE_SCALE_MM = 2.5
+HPBCD_HILL_EXPONENT = 2.0
+
+# Target-process calibration supplied by the user: sucrose-only achieved
+# 400 mg/mL, while sucrose + HPBCD achieved 550 mg/mL. Theoretical IgG content
+# and assay recovery were 81%/88.7% and 75%/92.6%, respectively.
+SUCROSE_REFERENCE_CAPACITY_MG_ML = 400.0
+SUCROSE_REFERENCE_IGG_FRACTION = 0.81
+SUCROSE_REFERENCE_ASSAY_RECOVERY = 0.887
+COMBINATION_REFERENCE_IGG_FRACTION = 0.75
+COMBINATION_REFERENCE_ASSAY_RECOVERY = 0.926
+COMBINATION_CAPACITY_MG_ML = 550.0
+COMBINATION_CAPACITY_BETA = (
+    COMBINATION_CAPACITY_MG_ML
+    / (
+        SUCROSE_REFERENCE_CAPACITY_MG_ML
+        * (
+            COMBINATION_REFERENCE_IGG_FRACTION
+            * COMBINATION_REFERENCE_ASSAY_RECOVERY
+        )
+        / (SUCROSE_REFERENCE_IGG_FRACTION * SUCROSE_REFERENCE_ASSAY_RECOVERY)
+    )
+    - 1.0
+)
+
+# The reference feed is scaled to 60 mg/mL IgG only to map the two reported
+# composition fractions into the anonymized prototype sliders. Exact approved
+# sucrose and HPBCD concentrations should replace this normalization later.
+REFERENCE_FEED_IGG_MG_ML = 60.0
+REFERENCE_SUCROSE_MG_ML = REFERENCE_FEED_IGG_MG_ML * (
+    1.0 / SUCROSE_REFERENCE_IGG_FRACTION - 1.0
+)
+REFERENCE_TOTAL_COMBINATION_EXCIPIENT_MG_ML = REFERENCE_FEED_IGG_MG_ML * (
+    1.0 / COMBINATION_REFERENCE_IGG_FRACTION - 1.0
+)
+REFERENCE_HPBCD_MG_ML = (
+    REFERENCE_TOTAL_COMBINATION_EXCIPIENT_MG_ML - REFERENCE_SUCROSE_MG_ML
+)
+
 
 QUALITY_FEATURES = [
     "feed_igg_mg_ml",
@@ -58,6 +106,9 @@ QUALITY_FEATURES = [
     "drying_time_h",
     "total_solids_mg_ml",
     "stabilizer_to_igg_ratio",
+    "sucrose_binding_fraction",
+    "hpbcd_interface_fraction",
+    "sucrose_hpbcd_interaction_norm",
 ]
 
 VISCOSITY_FEATURES = QUALITY_FEATURES + [
@@ -91,6 +142,41 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     out["stabilizer_to_igg_ratio"] = out["total_excipient_mg_ml"] / out[
         "feed_igg_mg_ml"
     ].clip(lower=1e-9)
+
+    out["sucrose_mM"] = (
+        out["sucrose_mg_ml"] * 1_000.0 / SUCROSE_MW_G_MOL
+    )
+    out["trehalose_mM"] = (
+        out["trehalose_mg_ml"] * 1_000.0 / TREHALOSE_MW_G_MOL
+    )
+    out["hpbcd_mM_assumed"] = (
+        out["hpbcd_mg_ml"] * 1_000.0 / HPBCD_ASSUMED_MW_G_MOL
+    )
+    out["sucrose_binding_fraction"] = out["sucrose_mM"] / (
+        SUCROSE_KD_293K_MM + out["sucrose_mM"]
+    )
+    out["hpbcd_interface_fraction"] = out["hpbcd_mM_assumed"] ** HPBCD_HILL_EXPONENT / (
+        HPBCD_INTERFACE_SCALE_MM**HPBCD_HILL_EXPONENT
+        + out["hpbcd_mM_assumed"] ** HPBCD_HILL_EXPONENT
+    )
+
+    reference_sucrose_mM = REFERENCE_SUCROSE_MG_ML * 1_000.0 / SUCROSE_MW_G_MOL
+    reference_hpbcd_mM = REFERENCE_HPBCD_MG_ML * 1_000.0 / HPBCD_ASSUMED_MW_G_MOL
+    reference_interaction = (
+        reference_sucrose_mM / (SUCROSE_KD_293K_MM + reference_sucrose_mM)
+    ) * (
+        reference_hpbcd_mM**HPBCD_HILL_EXPONENT
+        / (
+            HPBCD_INTERFACE_SCALE_MM**HPBCD_HILL_EXPONENT
+            + reference_hpbcd_mM**HPBCD_HILL_EXPONENT
+        )
+    )
+    out["sucrose_hpbcd_interaction"] = (
+        out["sucrose_binding_fraction"] * out["hpbcd_interface_fraction"]
+    )
+    out["sucrose_hpbcd_interaction_norm"] = (
+        out["sucrose_hpbcd_interaction"] / reference_interaction
+    ).clip(lower=0.0, upper=2.5)
     out["log_hardening_time"] = np.log1p(out["hardening_time_min"])
     out["powder_loading_g_ml"] = (
         out["powder_added_mg"] / 1_000.0 / out["mct_volume_ml"].clip(lower=1e-9)
@@ -99,6 +185,37 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
         out["powder_added_mg"]
         * out["igg_dry_fraction"]
         / out["mct_volume_ml"].clip(lower=1e-9)
+    )
+
+    # The interaction-adjusted capacity is a calibrated prototype equation. It
+    # represents formulation-enabled suspension loading, not aqueous solubility.
+    # The assay recovery interpolation is anchored only by the two provided rows.
+    out["calibrated_assay_recovery_fraction"] = (
+        SUCROSE_REFERENCE_ASSAY_RECOVERY
+        + (
+            COMBINATION_REFERENCE_ASSAY_RECOVERY
+            - SUCROSE_REFERENCE_ASSAY_RECOVERY
+        )
+        * out["sucrose_hpbcd_interaction_norm"]
+    ).clip(lower=0.80, upper=0.98)
+    effective_igg_fraction = (
+        out["igg_dry_fraction"] * out["calibrated_assay_recovery_fraction"]
+    )
+    reference_effective_fraction = (
+        SUCROSE_REFERENCE_IGG_FRACTION * SUCROSE_REFERENCE_ASSAY_RECOVERY
+    )
+    out["interaction_capacity_mg_ml"] = (
+        SUCROSE_REFERENCE_CAPACITY_MG_ML
+        * effective_igg_fraction
+        / reference_effective_fraction
+        * (
+            1.0
+            + COMBINATION_CAPACITY_BETA
+            * out["sucrose_hpbcd_interaction_norm"]
+        )
+    )
+    out["predicted_achievable_igg_mg_ml"] = np.minimum(
+        out["nominal_igg_mg_ml"], out["interaction_capacity_mg_ml"]
     )
 
     feed_volume = FIXED_PROCESS["feed_batch_volume_ml"]
@@ -168,6 +285,7 @@ def _synthetic_truth(df: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame
         + 0.10 * drying_long
         + 0.18 * viscosity_stress
         - 0.21 * sugar_protection
+        - 0.12 * np.minimum(out["sucrose_hpbcd_interaction_norm"], 1.5)
         - 0.07 * pvp_optimum
         + rng.normal(0.0, 0.055, len(out))
     )
@@ -315,6 +433,16 @@ class ModelBundle:
 
         result = pd.DataFrame(index=enriched.index)
         result["nominal_igg_mg_ml"] = enriched["nominal_igg_mg_ml"]
+        result["interaction_capacity_mg_ml"] = enriched["interaction_capacity_mg_ml"]
+        result["predicted_achievable_igg_mg_ml"] = enriched[
+            "predicted_achievable_igg_mg_ml"
+        ]
+        result["calibrated_assay_recovery_pct"] = (
+            100.0 * enriched["calibrated_assay_recovery_fraction"]
+        )
+        result["sucrose_hpbcd_interaction_norm"] = enriched[
+            "sucrose_hpbcd_interaction_norm"
+        ]
         result["final_hmw_pct"] = hmw
         result["final_hmw_p05"] = np.maximum(
             enriched["feed_hmw_pct"].to_numpy() + hmw_lo_delta, 0.0
@@ -361,11 +489,11 @@ def default_batch() -> dict[str, float]:
     """Return an anonymized center-point batch for the interactive explorer."""
     batch = {
         "feed_igg_mg_ml": 60.0,
-        "sucrose_mg_ml": 25.0,
-        "trehalose_mg_ml": 25.0,
-        "hpbcd_mg_ml": 35.0,
-        "pvp_mg_ml": 6.0,
-        "feed_viscosity_mpas": 38.0,
+        "sucrose_mg_ml": REFERENCE_SUCROSE_MG_ML,
+        "trehalose_mg_ml": 0.0,
+        "hpbcd_mg_ml": REFERENCE_HPBCD_MG_ML,
+        "pvp_mg_ml": 0.0,
+        "feed_viscosity_mpas": 30.0,
         "spray_flow_rpm": 20,
         "hardening_time_min": 60,
         "ea_powder_ratio_code": 0,

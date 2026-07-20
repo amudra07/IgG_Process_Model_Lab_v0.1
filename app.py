@@ -95,7 +95,7 @@ with st.sidebar:
     st.markdown("## Model status")
     st.success("Synthetic pipeline active")
     st.caption(f"Training data: {len(mock_data):,} mock batches")
-    st.caption("No company or experimental data loaded")
+    st.caption("Concentration capacity calibrated to 2 supplied formulation observations")
     st.markdown("---")
     st.markdown("### Fixed conditions")
     st.markdown(
@@ -119,12 +119,12 @@ def formulation_inputs() -> dict[str, float]:
     c1, c2, c3 = st.columns(3)
     with c1:
         feed_igg = st.slider("IgG in feed (mg/mL)", 45.0, 75.0, defaults["feed_igg_mg_ml"], 1.0)
-        sucrose = st.slider("Sucrose (mg/mL)", 0.0, 50.0, defaults["sucrose_mg_ml"], 1.0)
+        sucrose = st.slider("Sucrose (mg/mL)", 0.0, 30.0, defaults["sucrose_mg_ml"], 0.5)
     with c2:
-        trehalose = st.slider("Trehalose (mg/mL)", 0.0, 50.0, defaults["trehalose_mg_ml"], 1.0)
-        hpbcd = st.slider("HPBCD (mg/mL)", 0.0, 75.0, defaults["hpbcd_mg_ml"], 1.0)
+        trehalose = st.slider("Trehalose (mg/mL)", 0.0, 30.0, defaults["trehalose_mg_ml"], 0.5)
+        hpbcd = st.slider("HPBCD (mg/mL)", 0.0, 30.0, defaults["hpbcd_mg_ml"], 0.5)
     with c3:
-        pvp = st.slider("PVP (mg/mL)", 0.0, 15.0, defaults["pvp_mg_ml"], 0.5)
+        pvp = st.slider("PVP (mg/mL)", 0.0, 10.0, defaults["pvp_mg_ml"], 0.5)
         feed_visc = st.slider(
             "Initial feed viscosity (mPa·s)", 10.0, 80.0, defaults["feed_viscosity_mpas"], 1.0
         )
@@ -186,7 +186,12 @@ with tabs[0]:
 
     st.markdown("### Predicted outputs")
     r1, r2, r3, r4 = st.columns(4)
-    r1.metric("Nominal IgG", f"{prediction['nominal_igg_mg_ml']:.0f} mg/mL", "mass balance")
+    r1.metric(
+        "Predicted achievable IgG",
+        f"{prediction['predicted_achievable_igg_mg_ml']:.0f} mg/mL",
+        f"nominal mass balance {prediction['nominal_igg_mg_ml']:.0f} mg/mL",
+        delta_color="off",
+    )
     r2.metric(
         "Aggregation / HMW",
         f"{prediction['final_hmw_pct']:.2f}%",
@@ -206,8 +211,8 @@ with tabs[0]:
         delta_color="off",
     )
 
-    if not 500 <= prediction["nominal_igg_mg_ml"] <= 700:
-        st.warning("Nominal IgG concentration is outside the 500–700 mg/mL exploration domain.")
+    if not 500 <= prediction["predicted_achievable_igg_mg_ml"] <= 700:
+        st.warning("Interaction-adjusted achievable IgG is outside the 500–700 mg/mL exploration domain.")
     if not bool(prediction["powder_available_check"]):
         st.error("Selected powder load exceeds the synthetic powder available from this fixed-size mock batch.")
 
@@ -221,6 +226,9 @@ with tabs[0]:
                     "Mock spray-dried powder recovered",
                     "Mock final powder after hardening/drying",
                     "Powder loaded into MCT",
+                    "Sucrose–HPBCD interaction index",
+                    "Calibrated assay recovery",
+                    "Interaction-adjusted loading capacity",
                 ],
                 "Value": [
                     f"{enriched.loc[0, 'initial_dry_solids_mass_g']:.2f} g",
@@ -229,22 +237,43 @@ with tabs[0]:
                     f"{enriched.loc[0, 'mock_spray_powder_mass_g']:.2f} g",
                     f"{enriched.loc[0, 'mock_final_powder_mass_g']:.2f} g",
                     f"{batch['powder_added_mg'] / 1_000:.2f} g",
+                    f"{prediction['sucrose_hpbcd_interaction_norm']:.2f} × reference",
+                    f"{prediction['calibrated_assay_recovery_pct']:.1f}%",
+                    f"{prediction['interaction_capacity_mg_ml']:.0f} mg/mL",
                 ],
             }
         )
-        st.dataframe(mass_table, use_container_width=True, hide_index=True)
+        st.dataframe(mass_table, width="stretch", hide_index=True)
         st.caption(
-            "Concentration assumes non-selective recovery of IgG and excipients and uses added MCT volume as the nominal denominator."
+            "Nominal concentration uses mass balance. Achievable concentration additionally uses a literature-informed sucrose/HPBCD interaction term calibrated to the supplied 400 and 550 mg/mL observations."
+        )
+    with st.expander("How the excipient interaction equation works", expanded=False):
+        st.markdown(
+            r"""
+            The model calculates a saturable sucrose interaction and a threshold-like
+            HPBCD interfacial-protection term:
+
+            $$\theta_{Suc}=\frac{C_{Suc}}{K_{D,Suc}+C_{Suc}}$$
+
+            $$\theta_{HP}=\frac{C_{HP}^{n}}{K_{50,HP}^{n}+C_{HP}^{n}}$$
+
+            $$I_{Suc\times HP}=\theta_{Suc}\theta_{HP}$$
+
+            The normalized combination term modifies the formulation-enabled loading
+            capacity. The current constants use $K_{D,Suc}=88.63$ mM at 293 K,
+            $K_{50,HP}\approx2.5$ mM, and a fitted combination coefficient of 0.422.
+            The latter is target-process calibration, not a universal literature constant.
+            """
         )
 
 with tabs[1]:
     st.subheader("One-variable sensitivity explorer")
     st.caption("All other inputs remain at the anonymized center-point batch.")
     effect_options = {
-        "Sucrose concentration": ("sucrose_mg_ml", np.linspace(0, 50, 31)),
-        "Trehalose concentration": ("trehalose_mg_ml", np.linspace(0, 50, 31)),
-        "HPBCD concentration": ("hpbcd_mg_ml", np.linspace(0, 75, 31)),
-        "PVP concentration": ("pvp_mg_ml", np.linspace(0, 15, 31)),
+        "Sucrose concentration": ("sucrose_mg_ml", np.linspace(0, 30, 31)),
+        "Trehalose concentration": ("trehalose_mg_ml", np.linspace(0, 30, 31)),
+        "HPBCD concentration": ("hpbcd_mg_ml", np.linspace(0, 30, 31)),
+        "PVP concentration": ("pvp_mg_ml", np.linspace(0, 10, 21)),
         "Initial feed viscosity": ("feed_viscosity_mpas", np.linspace(10, 80, 31)),
         "Spray flow": ("spray_flow_rpm", np.array(SPRAY_LEVELS)),
         "Hardening time": ("hardening_time_min", np.array(HARDENING_LEVELS)),
@@ -258,22 +287,23 @@ with tabs[1]:
 
     response_label = st.radio(
         "Response",
-        ["Aggregation / HMW", "Monomer", "Viscosity", "Nominal IgG"],
+        ["Aggregation / HMW", "Monomer", "Viscosity", "Achievable IgG", "Nominal IgG"],
         horizontal=True,
     )
     response_map = {
         "Aggregation / HMW": "final_hmw_pct",
         "Monomer": "final_monomer_pct",
         "Viscosity": "final_viscosity_mpas",
+        "Achievable IgG": "predicted_achievable_igg_mg_ml",
         "Nominal IgG": "nominal_igg_mg_ml",
     }
     response_col = response_map[response_label]
     chart_data = sensitivity[[variable, response_col]].set_index(variable)
-    st.line_chart(chart_data, use_container_width=True)
+    st.line_chart(chart_data, width="stretch")
     st.dataframe(
-        sensitivity[[variable, "nominal_igg_mg_ml", "final_hmw_pct", "final_monomer_pct", "final_viscosity_mpas"]]
+        sensitivity[[variable, "predicted_achievable_igg_mg_ml", "nominal_igg_mg_ml", "final_hmw_pct", "final_monomer_pct", "final_viscosity_mpas"]]
         .round(3),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.info("These curves reflect the synthetic equation and surrogate model—not a measured causal relationship.")
@@ -281,13 +311,13 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("Pareto candidate explorer")
     st.caption(
-        "Frontier objectives: minimize HMW, maximize monomer, and minimize viscosity. Nominal IgG is constrained only to the 500–700 mg/mL model domain."
+        "Frontier objectives: minimize HMW, maximize monomer, and minimize viscosity. Interaction-adjusted achievable IgG is constrained to the 500–700 mg/mL model domain."
     )
     candidate_count = st.slider("Number of mock candidates", 500, 3_000, 1_500, 250)
     candidates = make_candidates(candidate_count)
     candidate_predictions = models.predict(candidates)
     candidate_results = pd.concat([candidates, candidate_predictions], axis=1)
-    in_domain = candidate_results["nominal_igg_mg_ml"].between(500, 700)
+    in_domain = candidate_results["predicted_achievable_igg_mg_ml"].between(500, 700)
     candidate_results = candidate_results.loc[in_domain].reset_index(drop=True)
     objectives = np.column_stack(
         [
@@ -314,7 +344,7 @@ with tabs[2]:
         y="final_viscosity_mpas",
         color="set",
         size="final_monomer_pct",
-        use_container_width=True,
+        width="stretch",
     )
     st.caption("Bubble size represents predicted monomer percentage.")
 
@@ -329,6 +359,7 @@ with tabs[2]:
         "hardening_time_min",
         "ea_powder_ratio_code",
         "drying_time_h",
+        "predicted_achievable_igg_mg_ml",
         "nominal_igg_mg_ml",
         "final_hmw_pct",
         "final_monomer_pct",
@@ -336,18 +367,18 @@ with tabs[2]:
     ]
     sort_by = st.selectbox(
         "Sort frontier for review",
-        ["final_hmw_pct", "final_monomer_pct", "final_viscosity_mpas", "nominal_igg_mg_ml"],
+        ["final_hmw_pct", "final_monomer_pct", "final_viscosity_mpas", "predicted_achievable_igg_mg_ml"],
         format_func=lambda x: {
             "final_hmw_pct": "Lowest HMW",
             "final_monomer_pct": "Highest monomer",
             "final_viscosity_mpas": "Lowest viscosity",
-            "nominal_igg_mg_ml": "Nominal IgG",
+            "predicted_achievable_igg_mg_ml": "Achievable IgG",
         }[x],
     )
     ascending = sort_by != "final_monomer_pct"
     st.dataframe(
         frontier.sort_values(sort_by, ascending=ascending)[display_cols].round(3),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -357,7 +388,8 @@ with tabs[3]:
         """
         | Output | Definition | Model method |
         |---|---|---|
-        | Nominal IgG concentration | Theoretical IgG mass divided by added MCT volume, mg/mL | Deterministic mass balance |
+        | Achievable IgG concentration | Minimum of nominal mass-balance loading and interaction-adjusted formulation capacity, mg/mL | Literature-informed equation calibrated to two supplied observations |
+        | Nominal IgG concentration | Theoretical IgG mass divided by added MCT volume, mg/mL | Deterministic mass balance retained as an intermediate |
         | Aggregation | SEC-HPLC HMW area% after final drying | Synthetic surrogate predicts process-induced change from feed |
         | Monomer | SEC-HPLC monomer area% after final drying | Synthetic surrogate predicts process-induced change from feed |
         | Viscosity | Dried powder dispersed in MCT, measured at 25 °C and 100 s⁻¹, mPa·s | Log-viscosity synthetic surrogate |
@@ -366,7 +398,10 @@ with tabs[3]:
     st.subheader("Key assumptions")
     st.markdown(
         """
-        - Sucrose, trehalose, HPBCD, PVP, and feed IgG ranges are anonymized placeholders.
+        - Sucrose, trehalose, HPBCD, PVP, and feed IgG ranges remain prototype values.
+        - Sucrose uses a reported mAb interaction constant of 88.63 mM at 293 K; transferability to this IgG must be tested.
+        - HPBCD uses a provisional molecular weight of 1,400 g/mol and a 2.5 mM interfacial-protection scale; the exact grade must replace these assumptions.
+        - The 0.422 sucrose–HPBCD combination coefficient is calibrated to the supplied 400/550 mg/mL results, not taken from literature.
         - Inlet, outlet, and hardening temperatures are fixed at 25 °C.
         - PS80 is fixed at 40 mg/mL in ethyl acetate.
         - Ethyl-acetate-to-powder ratio is coded as low/center/high because physical values are not yet confirmed.
@@ -378,7 +413,7 @@ with tabs[3]:
     st.subheader("Required before experimental use")
     st.markdown(
         """
-        1. Replace anonymized formulation ranges and ethyl-acetate ratio codes with approved physical values.
+        1. Replace prototype formulation ranges, HPBCD molecular weight, and ethyl-acetate ratio codes with approved physical values.
         2. Standardize SEC-HPLC, UV/protein assay, and rheology sample preparation.
         3. Collect paired feed and post-drying SEC results for each batch.
         4. Record actual powder recovery at spray drying and final drying stages.
@@ -386,4 +421,3 @@ with tabs[3]:
         6. Perform prospective confirmation batches before using recommendations for decisions.
         """
     )
-
