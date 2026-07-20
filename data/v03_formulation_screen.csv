@@ -1,0 +1,26 @@
+source,row_id,composition,sucrose_mg_ml,trehalose_mg_ml,hpbcd_mg_ml,pvp_mg_ml,other_excipient,other_mg_ml,theoretical_igg_pct,assay_pct,bulk_density_g_ml,tapped_density_g_ml,suspension_mg_ml,injectable_23g,aggregation_pct,monomer_pct,quantitative_for_capacity,notes
+screen_summary,S01,Sucrose + PS80,,,,,PS80,,,95.3,,,400,yes,2.45,,no,Component concentrations not reported
+screen_summary,S02,Salt + PS80,,,,,Salt + PS80,,,89.1,,,350,yes,3.83,,no,Component concentrations not reported
+screen_summary,S03,Sucrose + Salt + PS80,,,,,Salt + PS80,,,89.2,,,350,yes,4.55,,no,Component concentrations not reported
+screen_summary,S04,PVP K-12 + Sucrose,,,,,PVP K-12,,,91.5,,,350,yes,6.37,,no,Component concentrations not reported
+screen_summary,S05,Gelucire + Sucrose,,,,,Gelucire,,,92.6,,,300,yes,6.60,,no,Component concentrations not reported
+screen_summary,S06,Poloxamer 188 + Sucrose,,,,,Poloxamer 188,,,93.1,,,400,yes,6.29,,no,Component concentrations not reported
+screen_summary,S07,Soluplus + Sucrose,,,,,Soluplus,,,98.5,,,450,yes,6.50,,no,Component concentrations not reported
+screen_summary,S08,HPBCD + Sucrose,,,,,HPBCD,,,92.8,,,500,yes,5.69,,no,Component concentrations not reported
+screen_summary,S09,Trehalose,,,,,,,,87.4,,,,no,4.80,,no,Suspension and injectability reported as x
+screen_summary,S10,Mannitol,,,,,Mannitol,,,88.0,,,300,yes,4.90,,no,Component concentration not reported
+screen_summary,S11,Trehalose + HPBCD,,,,,HPBCD,,,82.3,,,550,yes,5.00,,no,Component concentrations not reported
+screen_summary,S12,Trehalose + Soluplus,,,,,Soluplus,,,93.4,,,350,yes,4.90,,no,Component concentrations not reported
+screen_summary,S13,Mannitol + Soluplus,,,,,Mannitol + Soluplus,,,93.6,,,,no,4.90,,no,Suspension and injectability reported as x
+detailed_screen,D01,HPBCD 5 + Sucrose 1.25,1.25,,5,,, ,76,90.6,0.35,0.49,400,yes,6.90,93.1,yes,
+detailed_screen,D02,HPBCD 5 + Sucrose 5,5,,5,,, ,72,89.6,0.50,0.69,500,yes,7.00,93.0,yes,
+detailed_screen,D03,HPBCD 5 without Sucrose,0,,5,,, ,78,88.6,0.29,0.70,600,yes,7.30,92.8,yes,
+detailed_screen,D04,HPBCD 2.5 + Sucrose 2.5,2.5,,2.5,,, ,78,89.3,0.46,0.65,500,yes,6.70,93.3,yes,
+detailed_screen,D05,HPBCD 5 + Sucrose 2.5,2.5,,5,,, ,75,98.1,0.34,0.45,500,yes,4.40,95.6,yes,
+detailed_screen,D06,HPBCD 10 + Sucrose 2.5,2.5,,10,,, ,70,89.7,0.66,0.73,600,yes,6.90,93.1,yes,
+detailed_screen,D07,Soluplus 2.5 + Sucrose 2.5,2.5,,,,Soluplus,2.5,78,92.7,0.30,0.60,500,yes,6.70,93.3,no,Outside current four-excipient numerical model
+detailed_screen,D08,Soluplus 5 + Sucrose 2.5,2.5,,,,Soluplus,5,75,98.5,0.38,0.61,500,yes,5.20,94.8,no,Outside current four-excipient numerical model
+detailed_screen,D09,Soluplus 10 + Sucrose 2.5,2.5,,,,Soluplus,10,70,90.6,0.66,0.73,550,yes,6.20,93.8,no,Outside current four-excipient numerical model
+detailed_screen,D10,P188 2.5 + Sucrose 2.5,2.5,,,,Poloxamer 188,2.5,78,,0.32,0.80,,,,,no,Testing incomplete
+detailed_screen,D11,P188 5 + Sucrose 2.5,2.5,,,,Poloxamer 188,5,75,,0.50,0.62,,,,,no,Testing incomplete
+detailed_screen,D12,P188 10 + Sucrose 2.5,2.5,,,,Poloxamer 188,10,70,,0.55,0.58,,,,,no,Testing incomplete

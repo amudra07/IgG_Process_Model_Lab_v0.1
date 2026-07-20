@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -18,14 +20,15 @@ from model import (
     pareto_mask,
     sensitivity_frame,
     train_mock_models,
+    experimental_capacity_surface,
 )
 
-APP_VERSION = "0.2"
-PREDICTION_SCHEMA = "0.2-interaction-capacity-20260720"
+APP_VERSION = "0.3"
+PREDICTION_SCHEMA = "0.3-empirical-capacity-20260720"
 
 
-def _with_v02_concentration(frame: pd.DataFrame, prediction: pd.DataFrame) -> pd.DataFrame:
-    """Attach v0.2 deterministic outputs even if a stale v0.1 model is cached.
+def _with_v03_concentration(frame: pd.DataFrame, prediction: pd.DataFrame) -> pd.DataFrame:
+    """Attach v0.3 empirical-capacity outputs at one stable schema boundary.
 
     Streamlit deployments can briefly retain an older cached ModelBundle while a
     new app file is starting. Keeping the deterministic concentration layer here
@@ -38,40 +41,25 @@ def _with_v02_concentration(frame: pd.DataFrame, prediction: pd.DataFrame) -> pd
     igg_fraction = frame["feed_igg_mg_ml"] / (frame["feed_igg_mg_ml"] + total_excipient).clip(lower=1e-9)
     nominal = frame["powder_added_mg"] * igg_fraction / frame["mct_volume_ml"].clip(lower=1e-9)
 
-    sucrose_mM = frame["sucrose_mg_ml"] * 1_000.0 / 342.30
-    hpbcd_mM = frame["hpbcd_mg_ml"] * 1_000.0 / 1_400.0
-    theta_sucrose = sucrose_mM / (88.63 + sucrose_mM)
-    theta_hpbcd = hpbcd_mM**2 / (2.5**2 + hpbcd_mM**2)
-
-    reference_sucrose = 60.0 * (1.0 / 0.81 - 1.0)
-    reference_hpbcd = 60.0 * (1.0 / 0.75 - 1.0) - reference_sucrose
-    ref_sucrose_mM = reference_sucrose * 1_000.0 / 342.30
-    ref_hpbcd_mM = reference_hpbcd * 1_000.0 / 1_400.0
-    reference_interaction = (
-        ref_sucrose_mM / (88.63 + ref_sucrose_mM)
-        * ref_hpbcd_mM**2 / (2.5**2 + ref_hpbcd_mM**2)
+    capacity, support = experimental_capacity_surface(
+        frame["sucrose_mg_ml"], frame["hpbcd_mg_ml"]
     )
-    interaction = ((theta_sucrose * theta_hpbcd) / reference_interaction).clip(0.0, 2.5)
-    assay_recovery = (0.887 + (0.926 - 0.887) * interaction).clip(0.80, 0.98)
-    beta = 550.0 / (400.0 * (0.75 * 0.926) / (0.81 * 0.887)) - 1.0
-    capacity = 400.0 * (igg_fraction * assay_recovery) / (0.81 * 0.887) * (1.0 + beta * interaction)
 
     result["nominal_igg_mg_ml"] = nominal.to_numpy()
-    result["sucrose_hpbcd_interaction_norm"] = interaction.to_numpy()
-    result["calibrated_assay_recovery_pct"] = (100.0 * assay_recovery).to_numpy()
-    result["interaction_capacity_mg_ml"] = capacity.to_numpy()
-    result["predicted_achievable_igg_mg_ml"] = np.minimum(nominal, capacity).to_numpy()
+    result["interaction_capacity_mg_ml"] = capacity
+    result["experimental_capacity_support"] = support
+    result["predicted_achievable_igg_mg_ml"] = np.minimum(nominal, capacity)
     return result
 
 
 class PredictionSchemaAdapter:
-    """Normalize cached or current model bundles to the v0.2 output schema."""
+    """Normalize model bundles to the v0.3 output schema."""
 
     def __init__(self, model_bundle):
         self.model_bundle = model_bundle
 
     def predict(self, frame: pd.DataFrame) -> pd.DataFrame:
-        return _with_v02_concentration(frame, self.model_bundle.predict(frame))
+        return _with_v03_concentration(frame, self.model_bundle.predict(frame))
 
 
 st.set_page_config(
@@ -148,7 +136,8 @@ with st.sidebar:
     st.markdown("## Model status")
     st.success("Synthetic pipeline active")
     st.caption(f"Training data: {len(mock_data):,} mock batches")
-    st.caption("Concentration capacity calibrated to 2 supplied formulation observations")
+    st.caption("Capacity surface uses 6 quantitative supplied rows")
+    st.caption("Broader screen: 25 transcribed rows, missing values preserved")
     st.markdown("---")
     st.markdown("### Fixed conditions")
     st.markdown(
@@ -172,10 +161,10 @@ def formulation_inputs() -> dict[str, float]:
     c1, c2, c3 = st.columns(3)
     with c1:
         feed_igg = st.slider("IgG in feed (mg/mL)", 45.0, 75.0, defaults["feed_igg_mg_ml"], 1.0)
-        sucrose = st.slider("Sucrose (mg/mL)", 0.0, 30.0, defaults["sucrose_mg_ml"], 0.5)
+        sucrose = st.slider("Sucrose (mg/mL)", 0.0, 10.0, defaults["sucrose_mg_ml"], 0.25)
     with c2:
         trehalose = st.slider("Trehalose (mg/mL)", 0.0, 30.0, defaults["trehalose_mg_ml"], 0.5)
-        hpbcd = st.slider("HPBCD (mg/mL)", 0.0, 30.0, defaults["hpbcd_mg_ml"], 0.5)
+        hpbcd = st.slider("HPBCD (mg/mL)", 0.0, 15.0, defaults["hpbcd_mg_ml"], 0.25)
     with c3:
         pvp = st.slider("PVP (mg/mL)", 0.0, 10.0, defaults["pvp_mg_ml"], 0.5)
         feed_visc = st.slider(
@@ -264,8 +253,10 @@ with tabs[0]:
         delta_color="off",
     )
 
-    if not 500 <= prediction["predicted_achievable_igg_mg_ml"] <= 700:
-        st.warning("Interaction-adjusted achievable IgG is outside the 500–700 mg/mL exploration domain.")
+    if not 250 <= prediction["predicted_achievable_igg_mg_ml"] <= 650:
+        st.warning("Predicted achievable IgG is outside the 250–650 mg/mL v0.3 exploration domain.")
+    if prediction["experimental_capacity_support"] < 0.35:
+        st.warning("Low experimental support: this sucrose/HPBCD combination is far from the six quantitative v0.3 anchors.")
     if not bool(prediction["powder_available_check"]):
         st.error("Selected powder load exceeds the synthetic powder available from this fixed-size mock batch.")
 
@@ -279,9 +270,8 @@ with tabs[0]:
                     "Mock spray-dried powder recovered",
                     "Mock final powder after hardening/drying",
                     "Powder loaded into MCT",
-                    "Sucrose–HPBCD interaction index",
-                    "Calibrated assay recovery",
-                    "Interaction-adjusted loading capacity",
+                    "Experimental-surface support",
+                    "Empirical loading capacity",
                 ],
                 "Value": [
                     f"{enriched.loc[0, 'initial_dry_solids_mass_g']:.2f} g",
@@ -290,32 +280,29 @@ with tabs[0]:
                     f"{enriched.loc[0, 'mock_spray_powder_mass_g']:.2f} g",
                     f"{enriched.loc[0, 'mock_final_powder_mass_g']:.2f} g",
                     f"{batch['powder_added_mg'] / 1_000:.2f} g",
-                    f"{prediction['sucrose_hpbcd_interaction_norm']:.2f} × reference",
-                    f"{prediction['calibrated_assay_recovery_pct']:.1f}%",
+                    f"{100 * prediction['experimental_capacity_support']:.0f}% proximity",
                     f"{prediction['interaction_capacity_mg_ml']:.0f} mg/mL",
                 ],
             }
         )
         st.dataframe(mass_table, width="stretch", hide_index=True)
         st.caption(
-            "Nominal concentration uses mass balance. Achievable concentration additionally uses a literature-informed sucrose/HPBCD interaction term calibrated to the supplied 400 and 550 mg/mL observations."
+            "Nominal concentration uses mass balance. Achievable concentration is capped by an empirical surface fitted to six supplied sucrose/HPBCD concentration combinations."
         )
     with st.expander("How the excipient interaction equation works", expanded=False):
         st.markdown(
             r"""
-            The model calculates a saturable sucrose interaction and a threshold-like
-            HPBCD interfacial-protection term:
+            Version 0.3 replaces the one-direction interaction bonus with bounded
+            inverse-distance interpolation over the six quantitative experimental rows:
 
-            $$\theta_{Suc}=\frac{C_{Suc}}{K_{D,Suc}+C_{Suc}}$$
+            $$\hat C_{cap}(x)=\frac{\sum_i w_i(x)C_i}{\sum_i w_i(x)}$$
 
-            $$\theta_{HP}=\frac{C_{HP}^{n}}{K_{50,HP}^{n}+C_{HP}^{n}}$$
+            $$w_i(x)=\left[d_i(x)^2+0.04\right]^{-2}$$
 
-            $$I_{Suc\times HP}=\theta_{Suc}\theta_{HP}$$
-
-            The normalized combination term modifies the formulation-enabled loading
-            capacity. The current constants use $K_{D,Suc}=88.63$ mM at 293 K,
-            $K_{50,HP}\approx2.5$ mM, and a fitted combination coefficient of 0.422.
-            The latter is target-process calibration, not a universal literature constant.
+            where $x=(C_{Suc},C_{HPBCD})$ and scaled distance uses 2.5 mg/mL on each
+            axis. Exact experimental combinations return the observed capacity exactly.
+            Rows with unreported component concentrations are displayed as qualitative
+            evidence but are not assigned invented numerical doses.
             """
         )
 
@@ -323,9 +310,9 @@ with tabs[1]:
     st.subheader("One-variable sensitivity explorer")
     st.caption("All other inputs remain at the anonymized center-point batch.")
     effect_options = {
-        "Sucrose concentration": ("sucrose_mg_ml", np.linspace(0, 30, 31)),
+        "Sucrose concentration": ("sucrose_mg_ml", np.linspace(0, 10, 41)),
         "Trehalose concentration": ("trehalose_mg_ml", np.linspace(0, 30, 31)),
-        "HPBCD concentration": ("hpbcd_mg_ml", np.linspace(0, 30, 31)),
+        "HPBCD concentration": ("hpbcd_mg_ml", np.linspace(0, 15, 61)),
         "PVP concentration": ("pvp_mg_ml", np.linspace(0, 10, 21)),
         "Initial feed viscosity": ("feed_viscosity_mpas", np.linspace(10, 80, 31)),
         "Spray flow": ("spray_flow_rpm", np.array(SPRAY_LEVELS)),
@@ -364,13 +351,13 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("Pareto candidate explorer")
     st.caption(
-        "Frontier objectives: minimize HMW, maximize monomer, and minimize viscosity. Interaction-adjusted achievable IgG is constrained to the 500–700 mg/mL model domain."
+        "Frontier objectives: minimize HMW, maximize monomer, and minimize viscosity. Achievable IgG is constrained to the 250–650 mg/mL v0.3 domain."
     )
     candidate_count = st.slider("Number of mock candidates", 500, 3_000, 1_500, 250)
     candidates = make_candidates(candidate_count)
     candidate_predictions = models.predict(candidates)
     candidate_results = pd.concat([candidates, candidate_predictions], axis=1)
-    in_domain = candidate_results["predicted_achievable_igg_mg_ml"].between(500, 700)
+    in_domain = candidate_results["predicted_achievable_igg_mg_ml"].between(250, 650)
     candidate_results = candidate_results.loc[in_domain].reset_index(drop=True)
     objectives = np.column_stack(
         [
@@ -441,7 +428,7 @@ with tabs[3]:
         """
         | Output | Definition | Model method |
         |---|---|---|
-        | Achievable IgG concentration | Minimum of nominal mass-balance loading and interaction-adjusted formulation capacity, mg/mL | Literature-informed equation calibrated to two supplied observations |
+        | Achievable IgG concentration | Minimum of nominal mass-balance loading and empirical formulation capacity, mg/mL | Bounded interpolation over six quantitative supplied rows |
         | Nominal IgG concentration | Theoretical IgG mass divided by added MCT volume, mg/mL | Deterministic mass balance retained as an intermediate |
         | Aggregation | SEC-HPLC HMW area% after final drying | Synthetic surrogate predicts process-induced change from feed |
         | Monomer | SEC-HPLC monomer area% after final drying | Synthetic surrogate predicts process-induced change from feed |
@@ -452,9 +439,10 @@ with tabs[3]:
     st.markdown(
         """
         - Sucrose, trehalose, HPBCD, PVP, and feed IgG ranges remain prototype values.
-        - Sucrose uses a reported mAb interaction constant of 88.63 mM at 293 K; transferability to this IgG must be tested.
-        - HPBCD uses a provisional molecular weight of 1,400 g/mol and a 2.5 mM interfacial-protection scale; the exact grade must replace these assumptions.
-        - The 0.422 sucrose–HPBCD combination coefficient is calibrated to the supplied 400/550 mg/mL results, not taken from literature.
+        - The capacity surface uses only six rows where both sucrose and HPBCD concentrations were reported.
+        - The broader PVP, trehalose, Soluplus, P188, Gelucire, salt, mannitol and PS80 screen is retained without inventing missing component concentrations.
+        - Experimental support is a proximity indicator, not a statistical confidence interval.
+        - Trehalose and PVP affect composition and synthetic quality features but do not receive an unmeasured concentration-capacity bonus.
         - Inlet, outlet, and hardening temperatures are fixed at 25 °C.
         - PS80 is fixed at 40 mg/mL in ethyl acetate.
         - Ethyl-acetate-to-powder ratio is coded as low/center/high because physical values are not yet confirmed.
@@ -473,4 +461,17 @@ with tabs[3]:
         5. Fit only low-complexity, uncertainty-aware models to the first <15 real batches.
         6. Perform prospective confirmation batches before using recommendations for decisions.
         """
+    )
+    st.subheader("Supplied v0.3 formulation evidence")
+    evidence = pd.read_csv(Path(__file__).parent / "data" / "v03_formulation_screen.csv")
+    st.caption(
+        "Only rows marked quantitative_for_capacity=yes enter the continuous sucrose/HPBCD capacity surface. Other rows challenge model direction and define future formulation branches."
+    )
+    st.dataframe(
+        evidence[[
+            "row_id", "composition", "suspension_mg_ml", "assay_pct",
+            "aggregation_pct", "monomer_pct", "quantitative_for_capacity", "notes"
+        ]],
+        width="stretch",
+        hide_index=True,
     )

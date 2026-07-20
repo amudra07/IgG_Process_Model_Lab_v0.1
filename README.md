@@ -4,20 +4,21 @@ Interactive Streamlit prototype for a high-concentration IgG formulation process
 
 `feed formulation → spray drying → particle hardening → final drying → MCT suspension`
 
-## Prototype status (v0.2)
+## Prototype status (v0.3)
 
 The process-response models, ranges, uncertainty bands, and recommendations are
 synthetic. The concentration module is now a hybrid: deterministic mass balance
-plus a literature-informed sucrose/HPBCD interaction equation calibrated to the
-two supplied observations (400 and 550 mg/mL). This is a calibration check, not
-independent validation, and must not be used as manufacturing evidence.
+plus a bounded empirical sucrose/HPBCD capacity surface fitted to six supplied
+rows with reported component concentrations. A broader 25-row formulation
+screen is included as evidence, with missing concentrations preserved rather
+than imputed. This is calibration, not independent validation.
 
 ## Defined outputs
 
 - Nominal IgG concentration: deterministic mass balance using theoretical IgG
   fraction, powder mass added, and added MCT volume.
 - Predicted achievable IgG concentration: the smaller of nominal concentration
-  and the interaction-adjusted formulation capacity.
+  and the empirical formulation capacity.
 - Aggregation: SEC-HPLC HMW area% after final drying.
 - Monomer: SEC-HPLC monomer area% after final drying.
 - Viscosity: powder dispersed in MCT, measured at 25 °C and 100 s⁻¹.
@@ -38,10 +39,10 @@ streamlit run app.py
 
 ## GitHub / Streamlit deployment
 
-Replace all repository files from this v0.2 package together, especially both
+Replace all repository files from this v0.3 package together, especially both
 `app.py` and `model.py`, then reboot the Streamlit app. The app includes a
 versioned cache key and a prediction-schema adapter so an older cached v0.1
-model cannot cause missing v0.2 concentration fields during startup.
+model cannot cause missing v0.3 concentration fields during startup.
 
 macOS/Linux:
 
@@ -67,24 +68,22 @@ streamlit run app.py
 - Final pressure-drying time: 8, 24, or 48 hours at room temperature.
 - Hardening medium: ethyl acetate with PS80 fixed at 40 mg/mL.
 - Ethyl-acetate-to-powder ratio: provisional coded low/center/high levels.
-- Nominal IgG suspension concentration: 500–700 mg/mL.
+- Achievable IgG exploration domain: 250–650 mg/mL.
 
-## Interaction equation
+## Empirical capacity equation
 
-Sucrose is represented by a saturable binding term and HPBCD by a threshold-like
-interfacial-protection term:
+The earlier one-direction sucrose×HPBCD bonus is replaced by inverse-distance
+interpolation over six quantitative supplied observations:
 
 ```text
-theta_suc = C_suc / (88.63 mM + C_suc)
-theta_HP  = C_HP^2 / ((2.5 mM)^2 + C_HP^2)
-I         = (theta_suc * theta_HP) / I_reference
-capacity  = 400 * (w_IgG * assay_recovery)/(0.81 * 0.887) * (1 + beta * I)
+weight_i = 1 / (scaled_distance_i^2 + 0.04)^2
+capacity = sum(weight_i * observed_capacity_i) / sum(weight_i)
 achievable concentration = min(nominal mass-balance concentration, capacity)
 ```
 
-`beta = 0.42246` is fitted so that the reference sucrose/HPBCD formulation gives
-550 mg/mL. Exact feed concentrations and the grade-specific HPBCD molecular
-weight are still needed to replace the anonymized reference normalization.
+Exact experimental combinations reproduce their reported capacity. The result
+is bounded to 250–650 mg/mL, and the app reports distance-based experimental
+support. This support score is not a validated confidence interval.
 
 ## Replacement with real data
 

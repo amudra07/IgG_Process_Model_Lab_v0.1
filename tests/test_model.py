@@ -9,10 +9,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from model import (  # noqa: E402
-    REFERENCE_HPBCD_MG_ML,
-    REFERENCE_SUCROSE_MG_ML,
+    V03_CAPACITY_ANCHORS,
     add_derived_features,
     default_batch,
+    experimental_quality_surface,
     generate_mock_data,
     make_candidates,
     pareto_mask,
@@ -43,7 +43,7 @@ def test_mock_pipeline_outputs_are_finite_and_bounded():
     ]
     prediction = bundle.predict(inputs)
     assert np.isfinite(prediction.select_dtypes(include="number")).all().all()
-    assert prediction["nominal_igg_mg_ml"].between(450, 750).all()
+    assert prediction["nominal_igg_mg_ml"].between(250, 650).all()
     assert (prediction["predicted_achievable_igg_mg_ml"] <= prediction["nominal_igg_mg_ml"]).all()
     assert (prediction["final_hmw_pct"] >= 0).all()
     assert (prediction["final_monomer_pct"] <= 100).all()
@@ -61,26 +61,33 @@ def test_nominal_concentration_is_mass_balance_not_ml():
     assert np.isclose(frame.loc[0, "nominal_igg_mg_ml"], expected)
 
 
-def test_interaction_capacity_reproduces_supplied_calibration_points():
-    sucrose = default_batch()
-    sucrose.update(
-        feed_igg_mg_ml=60.0,
-        sucrose_mg_ml=REFERENCE_SUCROSE_MG_ML,
-        trehalose_mg_ml=0.0,
-        hpbcd_mg_ml=0.0,
-        pvp_mg_ml=0.0,
-        powder_added_mg=2_000.0,
-        mct_volume_ml=1.0,
+def test_capacity_surface_reproduces_all_six_v03_anchors():
+    rows = []
+    for sucrose, hpbcd, _capacity, _assay, _hmw, _monomer in V03_CAPACITY_ANCHORS:
+        batch = default_batch()
+        batch.update(
+            sucrose_mg_ml=sucrose,
+            trehalose_mg_ml=0.0,
+            hpbcd_mg_ml=hpbcd,
+            pvp_mg_ml=0.0,
+            powder_added_mg=2_000.0,
+            mct_volume_ml=1.0,
+        )
+        rows.append(batch)
+    result = add_derived_features(pd.DataFrame(rows))
+    assert np.allclose(
+        result["interaction_capacity_mg_ml"].to_numpy(),
+        V03_CAPACITY_ANCHORS[:, 2],
     )
-    combination = dict(sucrose)
-    combination["hpbcd_mg_ml"] = REFERENCE_HPBCD_MG_ML
+    assert np.allclose(result["experimental_capacity_support"], 1.0)
 
-    result = add_derived_features(pd.DataFrame([sucrose, combination]))
-    assert np.isclose(result.loc[0, "interaction_capacity_mg_ml"], 400.0)
-    assert np.isclose(result.loc[1, "interaction_capacity_mg_ml"], 550.0)
-    assert np.isclose(result.loc[0, "calibrated_assay_recovery_fraction"], 0.887)
-    assert np.isclose(result.loc[1, "calibrated_assay_recovery_fraction"], 0.926)
-    assert np.isclose(result.loc[1, "sucrose_hpbcd_interaction_norm"], 1.0)
+    assay, hmw, monomer, support = experimental_quality_surface(
+        V03_CAPACITY_ANCHORS[:, 0], V03_CAPACITY_ANCHORS[:, 1]
+    )
+    assert np.allclose(assay, V03_CAPACITY_ANCHORS[:, 3])
+    assert np.allclose(hmw, V03_CAPACITY_ANCHORS[:, 4])
+    assert np.allclose(monomer, V03_CAPACITY_ANCHORS[:, 5])
+    assert np.allclose(support, 1.0)
 
 
 def test_pareto_filter_removes_known_dominated_point():

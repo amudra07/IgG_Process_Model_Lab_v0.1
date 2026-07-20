@@ -19,9 +19,9 @@ RANDOM_SEED = 20260720
 
 MOCK_RANGES = {
     "feed_igg_mg_ml": (45.0, 75.0),
-    "sucrose_mg_ml": (0.0, 30.0),
+    "sucrose_mg_ml": (0.0, 10.0),
     "trehalose_mg_ml": (0.0, 30.0),
-    "hpbcd_mg_ml": (0.0, 30.0),
+    "hpbcd_mg_ml": (0.0, 15.0),
     "pvp_mg_ml": (0.0, 10.0),
     "feed_viscosity_mpas": (10.0, 80.0),
     "feed_hmw_pct": (0.30, 1.50),
@@ -54,6 +54,23 @@ HPBCD_ASSUMED_MW_G_MOL = 1_400.0
 SUCROSE_KD_293K_MM = 88.63
 HPBCD_INTERFACE_SCALE_MM = 2.5
 HPBCD_HILL_EXPONENT = 2.0
+
+# User-supplied quantitative v0.3 anchors. Only rows with reported sucrose and
+# HPBCD concentrations are used in the continuous capacity surface. The broader
+# screen is retained in data/v03_formulation_screen.csv but is not assigned
+# invented concentrations.
+V03_CAPACITY_ANCHORS = np.array(
+    [
+        # sucrose, HPBCD, capacity, assay, HMW, monomer
+        [1.25, 5.0, 400.0, 90.6, 6.9, 93.1],
+        [5.00, 5.0, 500.0, 89.6, 7.0, 93.0],
+        [0.00, 5.0, 600.0, 88.6, 7.3, 92.8],
+        [2.50, 2.5, 500.0, 89.3, 6.7, 93.3],
+        [2.50, 5.0, 500.0, 98.1, 4.4, 95.6],
+        [2.50, 10.0, 600.0, 89.7, 6.9, 93.1],
+    ]
+)
+V03_CONCENTRATION_DOMAIN_MG_ML = (250.0, 650.0)
 
 # Target-process calibration supplied by the user: sucrose-only achieved
 # 400 mg/mL, while sucrose + HPBCD achieved 550 mg/mL. Theoretical IgG content
@@ -123,6 +140,57 @@ def _clip(value: np.ndarray, low: float, high: float) -> np.ndarray:
     return np.minimum(np.maximum(value, low), high)
 
 
+def experimental_capacity_surface(
+    sucrose_mg_ml: pd.Series | np.ndarray,
+    hpbcd_mg_ml: pd.Series | np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Interpolate the six measured sucrose/HPBCD capacity anchors.
+
+    Inverse-distance weighting is bounded by observed values and reproduces an
+    experimental row exactly. ``support`` ranges from zero to one and indicates
+    proximity to the measured concentration combinations; it is not statistical
+    confidence.
+    """
+    sucrose = np.asarray(sucrose_mg_ml, dtype=float)[:, None]
+    hpbcd = np.asarray(hpbcd_mg_ml, dtype=float)[:, None]
+    anchor_sucrose = V03_CAPACITY_ANCHORS[:, 0][None, :]
+    anchor_hpbcd = V03_CAPACITY_ANCHORS[:, 1][None, :]
+    capacity = V03_CAPACITY_ANCHORS[:, 2][None, :]
+    distance2 = ((sucrose - anchor_sucrose) / 2.5) ** 2 + (
+        (hpbcd - anchor_hpbcd) / 2.5
+    ) ** 2
+    weights = 1.0 / (distance2 + 0.04) ** 2
+    estimate = np.sum(weights * capacity, axis=1) / np.sum(weights, axis=1)
+    nearest = np.argmin(distance2, axis=1)
+    exact = np.min(distance2, axis=1) < 1e-12
+    estimate[exact] = V03_CAPACITY_ANCHORS[nearest[exact], 2]
+    support = np.exp(-0.5 * np.min(distance2, axis=1))
+    return _clip(estimate, *V03_CONCENTRATION_DOMAIN_MG_ML), support
+
+
+def experimental_quality_surface(
+    sucrose_mg_ml: pd.Series | np.ndarray,
+    hpbcd_mg_ml: pd.Series | np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return IDW assay, HMW and monomer priors plus proximity support."""
+    sucrose = np.asarray(sucrose_mg_ml, dtype=float)[:, None]
+    hpbcd = np.asarray(hpbcd_mg_ml, dtype=float)[:, None]
+    distance2 = ((sucrose - V03_CAPACITY_ANCHORS[:, 0]) / 2.5) ** 2 + (
+        (hpbcd - V03_CAPACITY_ANCHORS[:, 1]) / 2.5
+    ) ** 2
+    weights = 1.0 / (distance2 + 0.04) ** 2
+    estimates = []
+    nearest = np.argmin(distance2, axis=1)
+    exact = np.min(distance2, axis=1) < 1e-12
+    for column in (3, 4, 5):
+        values = V03_CAPACITY_ANCHORS[:, column]
+        estimate = np.sum(weights * values, axis=1) / np.sum(weights, axis=1)
+        estimate[exact] = values[nearest[exact]]
+        estimates.append(estimate)
+    support = np.exp(-0.5 * np.min(distance2, axis=1))
+    return estimates[0], estimates[1], estimates[2], support
+
+
 def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     """Add deterministic formulation and mass-balance descriptors."""
     out = df.copy()
@@ -187,9 +255,9 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
         / out["mct_volume_ml"].clip(lower=1e-9)
     )
 
-    # The interaction-adjusted capacity is a calibrated prototype equation. It
-    # represents formulation-enabled suspension loading, not aqueous solubility.
-    # The assay recovery interpolation is anchored only by the two provided rows.
+    # Retained for quality-model feature continuity. Concentration capacity below
+    # is now based on the six quantitative v0.3 anchors rather than the earlier
+    # one-direction sucrose×HPBCD bonus.
     out["calibrated_assay_recovery_fraction"] = (
         SUCROSE_REFERENCE_ASSAY_RECOVERY
         + (
@@ -198,22 +266,11 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
         )
         * out["sucrose_hpbcd_interaction_norm"]
     ).clip(lower=0.80, upper=0.98)
-    effective_igg_fraction = (
-        out["igg_dry_fraction"] * out["calibrated_assay_recovery_fraction"]
+    empirical_capacity, empirical_support = experimental_capacity_surface(
+        out["sucrose_mg_ml"], out["hpbcd_mg_ml"]
     )
-    reference_effective_fraction = (
-        SUCROSE_REFERENCE_IGG_FRACTION * SUCROSE_REFERENCE_ASSAY_RECOVERY
-    )
-    out["interaction_capacity_mg_ml"] = (
-        SUCROSE_REFERENCE_CAPACITY_MG_ML
-        * effective_igg_fraction
-        / reference_effective_fraction
-        * (
-            1.0
-            + COMBINATION_CAPACITY_BETA
-            * out["sucrose_hpbcd_interaction_norm"]
-        )
-    )
+    out["interaction_capacity_mg_ml"] = empirical_capacity
+    out["experimental_capacity_support"] = empirical_support
     out["predicted_achievable_igg_mg_ml"] = np.minimum(
         out["nominal_igg_mg_ml"], out["interaction_capacity_mg_ml"]
     )
@@ -382,7 +439,7 @@ def generate_mock_data(n: int = 700, seed: int = RANDOM_SEED) -> pd.DataFrame:
     interim = add_derived_features(
         df.assign(powder_added_mg=np.full(n, 1_000.0))
     )
-    target_concentration = rng.uniform(500.0, 700.0, n)
+    target_concentration = rng.uniform(*V03_CONCENTRATION_DOMAIN_MG_ML, n)
     df["powder_added_mg"] = (
         target_concentration
         * df["mct_volume_ml"]
@@ -431,31 +488,48 @@ class ModelBundle:
         monomer = enriched["feed_monomer_pct"].to_numpy() + mon_delta
         monomer = np.minimum(monomer, 99.8 - hmw)
 
+        assay_prior, hmw_prior, monomer_prior, quality_support = (
+            experimental_quality_surface(
+                enriched["sucrose_mg_ml"], enriched["hpbcd_mg_ml"]
+            )
+        )
+        hmw_ml = hmw.copy()
+        monomer_ml = monomer.copy()
+        hmw = quality_support * hmw_prior + (1.0 - quality_support) * hmw_ml
+        monomer = (
+            quality_support * monomer_prior
+            + (1.0 - quality_support) * monomer_ml
+        )
+        monomer = np.minimum(monomer, 100.0 - hmw)
+
         result = pd.DataFrame(index=enriched.index)
         result["nominal_igg_mg_ml"] = enriched["nominal_igg_mg_ml"]
         result["interaction_capacity_mg_ml"] = enriched["interaction_capacity_mg_ml"]
         result["predicted_achievable_igg_mg_ml"] = enriched[
             "predicted_achievable_igg_mg_ml"
         ]
-        result["calibrated_assay_recovery_pct"] = (
-            100.0 * enriched["calibrated_assay_recovery_fraction"]
-        )
+        result["calibrated_assay_recovery_pct"] = assay_prior
         result["sucrose_hpbcd_interaction_norm"] = enriched[
             "sucrose_hpbcd_interaction_norm"
         ]
+        result["experimental_capacity_support"] = enriched[
+            "experimental_capacity_support"
+        ]
         result["final_hmw_pct"] = hmw
+        hmw_shift = hmw - hmw_ml
         result["final_hmw_p05"] = np.maximum(
-            enriched["feed_hmw_pct"].to_numpy() + hmw_lo_delta, 0.0
+            enriched["feed_hmw_pct"].to_numpy() + hmw_lo_delta + hmw_shift, 0.0
         )
         result["final_hmw_p95"] = np.maximum(
-            enriched["feed_hmw_pct"].to_numpy() + hmw_hi_delta, 0.0
+            enriched["feed_hmw_pct"].to_numpy() + hmw_hi_delta + hmw_shift, 0.0
         )
         result["final_monomer_pct"] = monomer
+        monomer_shift = monomer - monomer_ml
         result["final_monomer_p05"] = np.maximum(
-            enriched["feed_monomer_pct"].to_numpy() + mon_lo_delta, 0.0
+            enriched["feed_monomer_pct"].to_numpy() + mon_lo_delta + monomer_shift, 0.0
         )
         result["final_monomer_p95"] = np.minimum(
-            enriched["feed_monomer_pct"].to_numpy() + mon_hi_delta, 100.0
+            enriched["feed_monomer_pct"].to_numpy() + mon_hi_delta + monomer_shift, 100.0
         )
         result["final_viscosity_mpas"] = np.exp(log_visc)
         result["final_viscosity_p05"] = np.exp(log_visc_lo)
@@ -489,9 +563,9 @@ def default_batch() -> dict[str, float]:
     """Return an anonymized center-point batch for the interactive explorer."""
     batch = {
         "feed_igg_mg_ml": 60.0,
-        "sucrose_mg_ml": REFERENCE_SUCROSE_MG_ML,
+        "sucrose_mg_ml": 2.5,
         "trehalose_mg_ml": 0.0,
-        "hpbcd_mg_ml": REFERENCE_HPBCD_MG_ML,
+        "hpbcd_mg_ml": 5.0,
         "pvp_mg_ml": 0.0,
         "feed_viscosity_mpas": 30.0,
         "spray_flow_rpm": 20,
@@ -506,7 +580,7 @@ def default_batch() -> dict[str, float]:
         pd.DataFrame([{**batch, "powder_added_mg": 1_000.0}])
     )
     igg_fraction = float(temp.loc[0, "igg_dry_fraction"])
-    batch["powder_added_mg"] = 600.0 / igg_fraction
+    batch["powder_added_mg"] = 500.0 / igg_fraction
     return batch
 
 

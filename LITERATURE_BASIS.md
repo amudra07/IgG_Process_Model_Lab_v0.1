@@ -1,4 +1,13 @@
-# Literature basis for the v0.2 interaction model
+# Evidence basis for the v0.3 hybrid model
+
+## v0.3 challenge result
+
+The new supplied screen contradicts a universally positive sucrose–HPBCD
+interaction. At 5 mg/mL HPBCD, reported suspension capacity was 600 mg/mL with
+no sucrose, 400 mg/mL with 1.25 mg/mL sucrose, and 500 mg/mL with 2.5 or
+5 mg/mL sucrose. Version 0.3 therefore replaces the prior directional bonus with
+a bounded empirical surface. Journal mechanisms remain explanatory priors for
+quality responses, not concentration multipliers.
 
 ## Scientific interpretation
 
