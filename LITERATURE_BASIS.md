@@ -1,4 +1,17 @@
-# Evidence basis for the v0.3 hybrid model
+# Evidence basis for the v0.3.1 hybrid model in the original v0.3 architecture
+
+## v0.3.1 supplied study update
+
+The complete v0.3 process model is retained. The new study adds four PVP HMW
+anchors (0, 15, 20, and 25 mg/mL), three milling-recovery anchors (15, 20, and
+25 mg/mL), a categorical water-reconstitution observation, and successful MCT
+loading anchors at 400 mg/mL for sucrose and 550 mg/mL for sucrose + HPBCD.
+
+The HMW anchors are blended with the existing v0.3 quality prediction. Milling
+recovery is interpolated only within its measured domain. The MCT successes are
+reported as confirmed lower bounds rather than exact maximum concentrations.
+This prevents the new evidence from being overextended into a fitted physical-
+failure probability or a universal vehicle-capacity equation.
 
 ## v0.3 challenge result
 

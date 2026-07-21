@@ -22,7 +22,7 @@ MOCK_RANGES = {
     "sucrose_mg_ml": (0.0, 10.0),
     "trehalose_mg_ml": (0.0, 30.0),
     "hpbcd_mg_ml": (0.0, 15.0),
-    "pvp_mg_ml": (0.0, 10.0),
+    "pvp_mg_ml": (0.0, 25.0),
     "feed_viscosity_mpas": (10.0, 80.0),
     "feed_hmw_pct": (0.30, 1.50),
     "feed_monomer_pct": (97.0, 99.4),
@@ -71,6 +71,83 @@ V03_CAPACITY_ANCHORS = np.array(
     ]
 )
 V03_CONCENTRATION_DOMAIN_MG_ML = (250.0, 650.0)
+
+# v0.3.1 evidence supplied by the user. HMW is available at four PVP levels,
+# while paired pre/post-milling assays are available only at 15--25 mg/mL.
+# These observations correct the v0.3 quality layer without replacing its
+# formulation/process inputs, mass balance, viscosity model, or Pareto workflow.
+PVP_HMW_ANCHORS = np.array(
+    [
+        [0.0, 5.17],
+        [15.0, 3.03],
+        [20.0, 3.21],
+        [25.0, 1.66],
+    ]
+)
+PVP_MILLING_RECOVERY_ANCHORS = np.array(
+    [
+        [15.0, 75.5],
+        [20.0, 86.7],
+        [25.0, 61.4],
+    ]
+)
+MCT_SUCROSE_CONFIRMED_MG_ML = 400.0
+MCT_SUCROSE_HPBCD_CONFIRMED_MG_ML = 550.0
+
+
+def pvp_observed_hmw(pvp_mg_ml: pd.Series | np.ndarray) -> np.ndarray:
+    """Piecewise-linear HMW prior from the supplied PVP experiment."""
+    pvp = np.asarray(pvp_mg_ml, dtype=float)
+    return np.interp(
+        pvp,
+        PVP_HMW_ANCHORS[:, 0],
+        PVP_HMW_ANCHORS[:, 1],
+    )
+
+
+def pvp_hmw_evidence_weight(pvp_mg_ml: pd.Series | np.ndarray) -> np.ndarray:
+    """Return the v0.3.1 evidence blend used by the prior update."""
+    pvp = np.asarray(pvp_mg_ml, dtype=float)
+    return np.where(pvp >= 15.0, 0.65, 0.25)
+
+
+def pvp_milling_recovery(pvp_mg_ml: pd.Series | np.ndarray) -> np.ndarray:
+    """Interpolate milling recovery only inside its measured 15--25 mg/mL range."""
+    pvp = np.asarray(pvp_mg_ml, dtype=float)
+    estimate = np.interp(
+        pvp,
+        PVP_MILLING_RECOVERY_ANCHORS[:, 0],
+        PVP_MILLING_RECOVERY_ANCHORS[:, 1],
+    )
+    return np.where((pvp >= 15.0) & (pvp <= 25.0), estimate, np.nan)
+
+
+def physical_loading_assessment(enriched: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Conservative, composition-specific MCT evidence status.
+
+    The supplied successful loads are lower-bound anchors, not exact maxima.
+    Formulations containing trehalose or PVP are labelled uncertain because the
+    two MCT loading anchors do not establish transferability to those blends.
+    """
+    sucrose = enriched["sucrose_mg_ml"].to_numpy()
+    hpbcd = enriched["hpbcd_mg_ml"].to_numpy()
+    trehalose = enriched["trehalose_mg_ml"].to_numpy()
+    pvp = enriched["pvp_mg_ml"].to_numpy()
+    loading = enriched["predicted_achievable_igg_mg_ml"].to_numpy()
+
+    simple_composition = (trehalose <= 0.25) & (pvp <= 0.25)
+    sucrose_only = simple_composition & (sucrose > 0.25) & (hpbcd <= 0.25)
+    sucrose_hpbcd = simple_composition & (sucrose > 0.25) & (hpbcd > 0.25)
+    confirmed = np.full(len(enriched), np.nan)
+    confirmed[sucrose_only] = MCT_SUCROSE_CONFIRMED_MG_ML
+    confirmed[sucrose_hpbcd] = MCT_SUCROSE_HPBCD_CONFIRMED_MG_ML
+
+    status = np.full(len(enriched), "Uncertain composition", dtype=object)
+    direct = np.isfinite(confirmed)
+    status[direct & (loading <= confirmed)] = "Supported"
+    status[direct & (loading > confirmed) & (loading <= 1.10 * confirmed)] = "Boundary"
+    status[direct & (loading > 1.10 * confirmed)] = "Extrapolated"
+    return confirmed, status
 
 # Target-process calibration supplied by the user: sucrose-only achieved
 # 400 mg/mL, while sucrose + HPBCD achieved 550 mg/mL. Theoretical IgG content
@@ -500,6 +577,17 @@ class ModelBundle:
             quality_support * monomer_prior
             + (1.0 - quality_support) * monomer_ml
         )
+        # v0.3.1 PVP correction: retain the original v0.3 hybrid prediction,
+        # then blend it with the supplied PVP HMW observations. Evidence carries
+        # greater weight inside the tested 15--25 mg/mL interval.
+        hmw_before_pvp = hmw.copy()
+        pvp_prior = pvp_observed_hmw(enriched["pvp_mg_ml"])
+        pvp_weight = pvp_hmw_evidence_weight(enriched["pvp_mg_ml"])
+        hmw = _clip(
+            (1.0 - pvp_weight) * hmw_before_pvp + pvp_weight * pvp_prior,
+            0.4,
+            9.0,
+        )
         monomer = np.minimum(monomer, 100.0 - hmw)
 
         result = pd.DataFrame(index=enriched.index)
@@ -535,6 +623,19 @@ class ModelBundle:
         result["final_viscosity_p05"] = np.exp(log_visc_lo)
         result["final_viscosity_p95"] = np.exp(log_visc_hi)
         result["powder_available_check"] = enriched["powder_available_check"].to_numpy()
+        result["pvp_hmw_prior_pct"] = pvp_prior
+        result["pvp_hmw_evidence_weight"] = pvp_weight
+        result["milling_recovery_pct"] = pvp_milling_recovery(
+            enriched["pvp_mg_ml"]
+        )
+        result["reconstitution_status"] = np.where(
+            enriched["pvp_mg_ml"].to_numpy() >= 15.0,
+            "Insoluble in supplied PVP study",
+            "Not established",
+        )
+        confirmed_loading, loading_status = physical_loading_assessment(enriched)
+        result["mct_confirmed_lower_bound_mg_ml"] = confirmed_loading
+        result["mct_loading_status"] = loading_status
         return result
 
 

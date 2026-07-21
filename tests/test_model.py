@@ -9,6 +9,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from model import (  # noqa: E402
+    PVP_HMW_ANCHORS,
+    PVP_MILLING_RECOVERY_ANCHORS,
     V03_CAPACITY_ANCHORS,
     add_derived_features,
     default_batch,
@@ -17,6 +19,8 @@ from model import (  # noqa: E402
     make_candidates,
     pareto_mask,
     train_mock_models,
+    pvp_milling_recovery,
+    pvp_observed_hmw,
 )
 
 
@@ -42,7 +46,14 @@ def test_mock_pipeline_outputs_are_finite_and_bounded():
         ]
     ]
     prediction = bundle.predict(inputs)
-    assert np.isfinite(prediction.select_dtypes(include="number")).all().all()
+    numeric = prediction.select_dtypes(include="number").drop(
+        columns=["milling_recovery_pct", "mct_confirmed_lower_bound_mg_ml"]
+    )
+    assert np.isfinite(numeric).all().all()
+    assert np.array_equal(
+        prediction["milling_recovery_pct"].isna().to_numpy(),
+        (~inputs["pvp_mg_ml"].between(15.0, 25.0)).to_numpy(),
+    )
     assert prediction["nominal_igg_mg_ml"].between(250, 650).all()
     assert (prediction["predicted_achievable_igg_mg_ml"] <= prediction["nominal_igg_mg_ml"]).all()
     assert (prediction["final_hmw_pct"] >= 0).all()
@@ -101,3 +112,27 @@ def test_candidate_generator_has_expected_process_levels():
     assert set(candidates["spray_flow_rpm"].unique()).issubset({20, 40})
     assert set(candidates["hardening_time_min"].unique()).issubset({10, 30, 60, 180, 300})
     assert set(candidates["drying_time_h"].unique()).issubset({8, 24, 48})
+
+
+def test_v031_pvp_hmw_and_milling_anchors_are_reproduced():
+    assert np.allclose(
+        pvp_observed_hmw(PVP_HMW_ANCHORS[:, 0]),
+        PVP_HMW_ANCHORS[:, 1],
+    )
+    assert np.allclose(
+        pvp_milling_recovery(PVP_MILLING_RECOVERY_ANCHORS[:, 0]),
+        PVP_MILLING_RECOVERY_ANCHORS[:, 1],
+    )
+    assert np.isnan(pvp_milling_recovery(np.array([10.0]))[0])
+
+
+def test_v031_full_process_prediction_adds_evidence_outputs():
+    data = generate_mock_data(n=160, seed=21)
+    bundle = train_mock_models(data, seed=22)
+    batch = default_batch()
+    batch["pvp_mg_ml"] = 20.0
+    result = bundle.predict(pd.DataFrame([batch])).iloc[0]
+    assert np.isclose(result["milling_recovery_pct"], 86.7)
+    assert result["reconstitution_status"] == "Insoluble in supplied PVP study"
+    assert result["mct_loading_status"] == "Uncertain composition"
+    assert 0.4 <= result["final_hmw_pct"] <= 9.0
