@@ -1,6 +1,6 @@
-# Evidence basis for the v0.3.1 hybrid model in the original v0.3 architecture
+# Evidence basis for the v0.3.2 modular hybrid model in the original v0.3 architecture
 
-## v0.3.1 supplied study update
+## v0.3.2 supplied study update
 
 The complete v0.3 process model is retained. The new study adds four PVP HMW
 anchors (0, 15, 20, and 25 mg/mL), three milling-recovery anchors (15, 20, and
@@ -12,6 +12,29 @@ recovery is interpolated only within its measured domain. The MCT successes are
 reported as confirmed lower bounds rather than exact maximum concentrations.
 This prevents the new evidence from being overextended into a fitted physical-
 failure probability or a universal vehicle-capacity equation.
+
+The supplied ultrasonic-spray table also establishes that transducer power (%)
+and feed flow (rpm) are independent controls. Earlier source code incorrectly
+used the 20/40 values as spray flow. v0.3.2 separates 20/40% ultrasonic power
+from 20/40/60 rpm feed flow. The 40% observations support a nozzle-heating and
+clogging warning; they do not yet establish a particle-size or kinetic equation.
+
+Soluplus is not activated as a model variable in v0.3.2.
+
+## Modular unit-operation strategy
+
+The full process map is retained, but influence analysis is separated into four
+models: formulation stability, ultrasonic spray drying, hardening/final drying,
+and milling/MCT loading. Only variables from the selected unit operation are
+adjustable in that scope. The full simulator connects the output material state
+from one block to the next.
+
+The Fiedler et al. (2023) strategy is used as an architectural lesson: learn
+physical spray-drying responses using lower-cost surrogate experiments, then
+bridge selected conditions to actual protein. It does not provide Thermicra
+coefficients. Accordingly, recovery, moisture, particle size, morphology, and
+deposition belong to the physical spray model, whereas IgG aggregation requires
+actual-IgG input/output SEC-HPLC measurements.
 
 ## v0.3 challenge result
 
@@ -44,6 +67,7 @@ and measurement endpoint differ from the target process.
 | Härtl et al. (2013) found concentration-, stress-, and antibody-dependent HPBCD effects, including possible thermal destabilization. | Prevents assuming a universally positive linear HPBCD effect. | No universal coefficient can be transferred. |
 | Tam et al. (2025) found that HPBCD combined with trehalose inhibited trehalose recrystallization and improved stability of spray-dried mAb formulations versus trehalose alone. | Supports explicit combination features and future trehalose×HPBCD testing. | Protein:excipient ratio and formulation conditions govern the effect. |
 | Jiang et al. (2021) reported that PVP reduced turbidity and increased IgG recovery in a spray-layering study, with sugars providing further benefit. | Retains PVP as a potential main effect and interaction input. | Spray layering is not the current spray-dry/hardening process. |
+| Fiedler et al. (2023) used staged surrogate experiments to map spray-drying CQAs before protein verification. | Supports a distinct spray transformation block and staged surrogate-to-protein calibration. | Lactose/HSA results cannot supply target-process IgG coefficients. |
 
 ## Primary sources
 
@@ -52,6 +76,7 @@ and measurement endpoint differ from the target process.
 - Härtl et al., *Journal of Pharmaceutical Sciences* (2013): https://doi.org/10.1002/jps.23729
 - Tam et al., *Molecular Pharmaceutics* (2025): https://doi.org/10.1021/acs.molpharmaceut.5c00639
 - Jiang et al., *International Journal of Pharmaceutics* (2021): https://pubmed.ncbi.nlm.nih.gov/34748814/
+- Fiedler et al., *International Journal of Pharmaceutics* (2023): https://doi.org/10.1016/j.ijpharm.2023.123133
 - Ramezani et al., *Drug Development and Industrial Pharmacy* (2017): https://doi.org/10.1080/03639045.2017.1293679
 
 ## What the two supplied observations establish
@@ -71,4 +96,15 @@ agreement at those two points is calibration, not predictive validation.
 - Assay recovery, moisture, bulk/tapped density, particle-size distribution, and
   MCT viscosity at 25 °C and 100 s^-1.
 - Feed and post-drying SEC-HPLC HMW/monomer for each batch.
+- Immediate post-spray SEC-HPLC HMW/monomer to isolate `K_agg,SD`.
+- Matched ultrasonic power, feed flow, nozzle temperature, recovery, moisture,
+  particle size, morphology, and deposition measurements for each spray batch.
 - A held-out set of batches that is not used to fit coefficients.
+
+## Evidence and uncertainty display
+
+Synthetic tree-to-tree P05–P95 ranges are not experimental confidence
+intervals and are therefore removed from the v0.3.2 interface. The app instead
+reports nearest-anchor distance, number of quantitative formulation anchors,
+interpolation versus extrapolation, and evidence class. Replicate batches are
+required before statistical confidence or prediction intervals can be claimed.

@@ -1,0 +1,5 @@
+source_id,composition,ultrasonic_power_pct,feed_flow_rpm,suspension_mg_ml,aggregation_pct,interpretation,model_use
+user_supplied_20260722,Sucrose,20,40,400,2.45,Observed batch result,Qualitative power anchor; not a universal coefficient
+user_supplied_20260722,Sucrose,40,40,550,2.23,Observed batch result with nozzle heating/clogging risk,Qualitative power anchor; not a universal coefficient
+user_supplied_20260722,Salt,20,40,350,3.83,Observed batch result,Qualitative power anchor; not a universal coefficient
+user_supplied_20260722,Salt,40,40,350,3.30,Observed batch result with nozzle heating/clogging risk,Qualitative power anchor; not a universal coefficient

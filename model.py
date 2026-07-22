@@ -1,4 +1,4 @@
-"""Synthetic hybrid model for an IgG spray-dry/hardening workflow.
+"""Modular hybrid model for an IgG ultrasonic spray/hardening workflow.
 
 This module is deliberately a pipeline prototype.  The equations and generated
 responses are illustrative and must not be interpreted as experimental evidence.
@@ -30,7 +30,8 @@ MOCK_RANGES = {
     "mct_volume_ml": (0.75, 1.50),
 }
 
-SPRAY_LEVELS = (20, 40)
+ULTRASONIC_POWER_LEVELS = (20, 40)
+FEED_FLOW_LEVELS = (20, 40, 60)
 HARDENING_LEVELS = (10, 30, 60, 180, 300)
 DRYING_LEVELS = (8, 24, 48)
 EA_RATIO_LEVELS = (-1, 0, 1)
@@ -193,7 +194,8 @@ QUALITY_FEATURES = [
     "hpbcd_mg_ml",
     "pvp_mg_ml",
     "feed_viscosity_mpas",
-    "spray_flow_rpm",
+    "ultrasonic_power_pct",
+    "feed_flow_rpm",
     "hardening_time_min",
     "log_hardening_time",
     "ea_powder_ratio_code",
@@ -323,6 +325,20 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
         out["sucrose_hpbcd_interaction"] / reference_interaction
     ).clip(lower=0.0, upper=2.5)
     out["log_hardening_time"] = np.log1p(out["hardening_time_min"])
+    # Equipment descriptors are deliberately dimensionless. Without measured
+    # droplet size or residence time they are severity indices, not kinetic
+    # constants. Higher ultrasonic power increases atomization intensity, while
+    # higher feed flow loads more liquid onto the nozzle at the same power.
+    out["atomization_severity_index"] = (
+        (out["ultrasonic_power_pct"] / 20.0)
+        / (out["feed_flow_rpm"] / 40.0).clip(lower=0.25)
+        * (30.0 / out["feed_viscosity_mpas"].clip(lower=5.0)) ** 0.20
+    )
+    out["thermal_clogging_risk"] = np.where(
+        out["ultrasonic_power_pct"] >= 40.0,
+        "Observed nozzle-heating/clogging risk at 40% power",
+        "Lower observed nozzle-heating risk at 20% power",
+    )
     out["powder_loading_g_ml"] = (
         out["powder_added_mg"] / 1_000.0 / out["mct_volume_ml"].clip(lower=1e-9)
     )
@@ -358,14 +374,33 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
         out["total_solids_mg_ml"] * feed_volume / 1_000.0
     )
 
-    # These are mock process-yield equations for demonstrating mass-balance flow.
+    # Provisional process-yield equations for demonstrating mass-balance flow.
+    # These are kept separate from experimental evidence and must be replaced by
+    # paired feed/recovered-powder measurements.
     solids_centered = (out["total_solids_mg_ml"] - 130.0) / 100.0
     spray_yield = (
         0.78
-        + 0.045 * (out["spray_flow_rpm"] == 40).astype(float)
+        + 0.020 * np.tanh(out["atomization_severity_index"] - 1.0)
+        - 0.015 * ((out["feed_flow_rpm"] - 40.0) / 20.0) ** 2
         + 0.025 * np.tanh(solids_centered)
     )
-    out["mock_spray_recovery_fraction"] = _clip(spray_yield.to_numpy(), 0.60, 0.93)
+    out["provisional_spray_recovery_fraction"] = _clip(spray_yield.to_numpy(), 0.60, 0.93)
+
+    # Reactor-like spray block. K_dry is a provisional drying-severity index,
+    # not a fitted rate constant. Particle size and IgG spray-damage coefficients
+    # remain explicitly uncalibrated until paired measurements are available.
+    out["provisional_drying_severity_k"] = _clip(
+        (
+            0.55
+            + 0.22 * np.log1p(out["atomization_severity_index"])
+            - 0.12 * np.maximum((out["total_solids_mg_ml"] - 100.0) / 100.0, 0)
+        ).to_numpy(),
+        0.10,
+        1.50,
+    )
+    out["spray_agg_severity_k"] = np.nan
+    out["spray_agg_calibration_status"] = "Not calibrated—post-spray SEC-HPLC pending"
+    out["particle_size_calibration_status"] = "Not calibrated—droplet/particle-size data pending"
 
     hardening_penalty = (
         0.010 * np.abs(out["ea_powder_ratio_code"])
@@ -379,16 +414,16 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
         (1.0 - drying_loss).to_numpy(), 0.94, 0.99
     )
 
-    out["mock_spray_powder_mass_g"] = (
-        out["initial_dry_solids_mass_g"] * out["mock_spray_recovery_fraction"]
+    out["provisional_spray_powder_mass_g"] = (
+        out["initial_dry_solids_mass_g"] * out["provisional_spray_recovery_fraction"]
     )
-    out["mock_final_powder_mass_g"] = (
-        out["mock_spray_powder_mass_g"]
+    out["provisional_final_powder_mass_g"] = (
+        out["provisional_spray_powder_mass_g"]
         * out["mock_hardening_recovery_fraction"]
         * out["mock_drying_recovery_fraction"]
     )
     out["powder_available_check"] = (
-        out["powder_added_mg"] / 1_000.0 <= out["mock_final_powder_mass_g"]
+        out["powder_added_mg"] / 1_000.0 <= out["provisional_final_powder_mass_g"]
     )
     return out
 
@@ -402,7 +437,7 @@ def _synthetic_truth(df: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame
         / 45.0
     )
     pvp_optimum = np.exp(-((out["pvp_mg_ml"] - 6.0) / 5.0) ** 2)
-    shear_stress = (out["spray_flow_rpm"] == 40).astype(float)
+    atomization_stress = np.maximum(out["atomization_severity_index"] - 1.0, 0)
     hardening_distance = np.abs(
         np.log1p(out["hardening_time_min"]) - np.log1p(60.0)
     )
@@ -412,7 +447,7 @@ def _synthetic_truth(df: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame
 
     delta_hmw = (
         0.32
-        + 0.16 * shear_stress
+        + 0.10 * atomization_stress
         + 0.16 * hardening_distance
         + 0.13 * np.abs(out["ea_powder_ratio_code"])
         + 0.13 * drying_short
@@ -427,7 +462,7 @@ def _synthetic_truth(df: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame
 
     non_hmw_loss = (
         0.10
-        + 0.045 * shear_stress
+        + 0.030 * atomization_stress
         + 0.065 * drying_long
         + 0.035 * hardening_distance
         + rng.normal(0.0, 0.035, len(out))
@@ -450,7 +485,7 @@ def _synthetic_truth(df: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame
 
     loading_scaled = out["powder_loading_g_ml"] / 2.0
     morphology_factor = (
-        0.10 * shear_stress
+        0.07 * atomization_stress
         + 0.09 * np.abs(out["ea_powder_ratio_code"])
         + 0.07 * hardening_distance
         - 0.0015 * out["hpbcd_mg_ml"]
@@ -504,7 +539,8 @@ def generate_mock_data(n: int = 700, seed: int = RANDOM_SEED) -> pd.DataFrame:
             "hpbcd_mg_ml": hpbcd,
             "pvp_mg_ml": pvp,
             "feed_viscosity_mpas": feed_viscosity,
-            "spray_flow_rpm": rng.choice(SPRAY_LEVELS, n),
+            "ultrasonic_power_pct": rng.choice(ULTRASONIC_POWER_LEVELS, n),
+            "feed_flow_rpm": rng.choice(FEED_FLOW_LEVELS, n),
             "hardening_time_min": rng.choice(HARDENING_LEVELS, n),
             "ea_powder_ratio_code": rng.choice(EA_RATIO_LEVELS, n),
             "drying_time_h": rng.choice(DRYING_LEVELS, n),
@@ -525,21 +561,13 @@ def generate_mock_data(n: int = 700, seed: int = RANDOM_SEED) -> pd.DataFrame:
     return _synthetic_truth(df, rng)
 
 
-def _tree_quantiles(
-    model: ExtraTreesRegressor,
-    x: pd.DataFrame,
-    lower: float = 0.05,
-    upper: float = 0.95,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _tree_mean(model: ExtraTreesRegressor, x: pd.DataFrame) -> np.ndarray:
+    """Return the ensemble mean without presenting tree spread as uncertainty."""
     x_values = x.to_numpy()
     tree_predictions = np.column_stack(
         [estimator.predict(x_values) for estimator in model.estimators_]
     )
-    return (
-        np.mean(tree_predictions, axis=1),
-        np.quantile(tree_predictions, lower, axis=1),
-        np.quantile(tree_predictions, upper, axis=1),
-    )
+    return np.mean(tree_predictions, axis=1)
 
 
 @dataclass
@@ -551,15 +579,9 @@ class ModelBundle:
     def predict(self, frame: pd.DataFrame) -> pd.DataFrame:
         enriched = add_derived_features(frame)
 
-        hmw_delta, hmw_lo_delta, hmw_hi_delta = _tree_quantiles(
-            self.hmw_delta_model, enriched[QUALITY_FEATURES]
-        )
-        mon_delta, mon_lo_delta, mon_hi_delta = _tree_quantiles(
-            self.monomer_delta_model, enriched[QUALITY_FEATURES]
-        )
-        log_visc, log_visc_lo, log_visc_hi = _tree_quantiles(
-            self.log_viscosity_model, enriched[VISCOSITY_FEATURES]
-        )
+        hmw_delta = _tree_mean(self.hmw_delta_model, enriched[QUALITY_FEATURES])
+        mon_delta = _tree_mean(self.monomer_delta_model, enriched[QUALITY_FEATURES])
+        log_visc = _tree_mean(self.log_viscosity_model, enriched[VISCOSITY_FEATURES])
 
         hmw = np.maximum(enriched["feed_hmw_pct"].to_numpy() + hmw_delta, 0.0)
         monomer = enriched["feed_monomer_pct"].to_numpy() + mon_delta
@@ -604,25 +626,62 @@ class ModelBundle:
             "experimental_capacity_support"
         ]
         result["final_hmw_pct"] = hmw
-        hmw_shift = hmw - hmw_ml
-        result["final_hmw_p05"] = np.maximum(
-            enriched["feed_hmw_pct"].to_numpy() + hmw_lo_delta + hmw_shift, 0.0
-        )
-        result["final_hmw_p95"] = np.maximum(
-            enriched["feed_hmw_pct"].to_numpy() + hmw_hi_delta + hmw_shift, 0.0
-        )
+        result["delta_hmw_pct"] = hmw - enriched["feed_hmw_pct"].to_numpy()
         result["final_monomer_pct"] = monomer
-        monomer_shift = monomer - monomer_ml
-        result["final_monomer_p05"] = np.maximum(
-            enriched["feed_monomer_pct"].to_numpy() + mon_lo_delta + monomer_shift, 0.0
-        )
-        result["final_monomer_p95"] = np.minimum(
-            enriched["feed_monomer_pct"].to_numpy() + mon_hi_delta + monomer_shift, 100.0
-        )
+        result["delta_monomer_pct"] = monomer - enriched["feed_monomer_pct"].to_numpy()
         result["final_viscosity_mpas"] = np.exp(log_visc)
-        result["final_viscosity_p05"] = np.exp(log_visc_lo)
-        result["final_viscosity_p95"] = np.exp(log_visc_hi)
         result["powder_available_check"] = enriched["powder_available_check"].to_numpy()
+        result["provisional_spray_recovery_pct"] = 100.0 * enriched[
+            "provisional_spray_recovery_fraction"
+        ].to_numpy()
+        result["provisional_drying_severity_k"] = enriched[
+            "provisional_drying_severity_k"
+        ].to_numpy()
+        result["atomization_severity_index"] = enriched[
+            "atomization_severity_index"
+        ].to_numpy()
+        result["spray_agg_severity_k"] = enriched["spray_agg_severity_k"].to_numpy()
+        result["spray_agg_calibration_status"] = enriched[
+            "spray_agg_calibration_status"
+        ].to_numpy()
+        result["particle_size_calibration_status"] = enriched[
+            "particle_size_calibration_status"
+        ].to_numpy()
+        result["thermal_clogging_risk"] = enriched["thermal_clogging_risk"].to_numpy()
+
+        sucrose = enriched["sucrose_mg_ml"].to_numpy()
+        hpbcd = enriched["hpbcd_mg_ml"].to_numpy()
+        anchor_distance = np.sqrt(
+            np.min(
+                ((sucrose[:, None] - V03_CAPACITY_ANCHORS[:, 0]) / 2.5) ** 2
+                + ((hpbcd[:, None] - V03_CAPACITY_ANCHORS[:, 1]) / 2.5) ** 2,
+                axis=1,
+            )
+        )
+        result["nearest_formulation_distance"] = anchor_distance
+        result["supporting_formulation_observations"] = len(V03_CAPACITY_ANCHORS)
+        exact_anchor = anchor_distance < 1e-9
+        local_region = (
+            (sucrose >= V03_CAPACITY_ANCHORS[:, 0].min())
+            & (sucrose <= V03_CAPACITY_ANCHORS[:, 0].max())
+            & (hpbcd >= V03_CAPACITY_ANCHORS[:, 1].min())
+            & (hpbcd <= V03_CAPACITY_ANCHORS[:, 1].max())
+            & (quality_support >= 0.35)
+        )
+        result["capacity_evidence_status"] = np.where(
+            exact_anchor,
+            "Exact experimental anchor",
+            np.where(local_region, "Local interpolation", "Extrapolation / low support"),
+        )
+        result["quality_evidence_status"] = np.where(
+            exact_anchor,
+            "Real empirical anchor blended with provisional process model",
+            np.where(
+                local_region,
+                "Local empirical interpolation + provisional process model",
+                "Provisional synthetic process model",
+            ),
+        )
         result["pvp_hmw_prior_pct"] = pvp_prior
         result["pvp_hmw_evidence_weight"] = pvp_weight
         result["milling_recovery_pct"] = pvp_milling_recovery(
@@ -669,7 +728,8 @@ def default_batch() -> dict[str, float]:
         "hpbcd_mg_ml": 5.0,
         "pvp_mg_ml": 0.0,
         "feed_viscosity_mpas": 30.0,
-        "spray_flow_rpm": 20,
+        "ultrasonic_power_pct": 20,
+        "feed_flow_rpm": 40,
         "hardening_time_min": 60,
         "ea_powder_ratio_code": 0,
         "drying_time_h": 24,
@@ -698,7 +758,8 @@ def make_candidates(n: int = 2_000, seed: int = RANDOM_SEED + 11) -> pd.DataFram
         "hpbcd_mg_ml",
         "pvp_mg_ml",
         "feed_viscosity_mpas",
-        "spray_flow_rpm",
+        "ultrasonic_power_pct",
+        "feed_flow_rpm",
         "hardening_time_min",
         "ea_powder_ratio_code",
         "drying_time_h",

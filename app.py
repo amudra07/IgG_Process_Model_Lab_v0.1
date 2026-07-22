@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -10,7 +12,8 @@ from model import (
     FIXED_PROCESS,
     HARDENING_LEVELS,
     MOCK_RANGES,
-    SPRAY_LEVELS,
+    ULTRASONIC_POWER_LEVELS,
+    FEED_FLOW_LEVELS,
     add_derived_features,
     default_batch,
     generate_mock_data,
@@ -21,8 +24,9 @@ from model import (
     experimental_capacity_surface,
 )
 
-APP_VERSION = "0.3.1"
-PREDICTION_SCHEMA = "0.3.1-full-process-pvp-evidence-20260721"
+APP_VERSION = "0.3.2"
+PREDICTION_SCHEMA = "0.3.2-modular-ultrasonic-power-feed-flow-20260722"
+POWER_EVIDENCE_PATH = Path(__file__).resolve().parent / "data" / "ultrasonic_power_observations.csv"
 
 
 def _with_v03_concentration(frame: pd.DataFrame, prediction: pd.DataFrame) -> pd.DataFrame:
@@ -118,12 +122,13 @@ st.markdown(
     """
     <div class="hero">
       <h1>IgG Process Model Lab</h1>
-      <p>Explore a spray-dry → hardening → final-drying → MCT suspension workflow.</p>
+      <p>Explore formulation → ultrasonic spray → hardening/drying → MCT loading as connected unit-operation models.</p>
     </div>
     <div class="notice">
-      <b>Pipeline prototype:</b> all formulation ranges, response equations, training
-      batches, uncertainty bands, and recommendations are synthetic. They demonstrate
-      model behavior and must not be used as experimental or manufacturing evidence.
+      <b>Evidence-aware prototype:</b> mass balances are calculated; six local
+      sucrose–HPBCD points, PVP observations, power observations, and loading anchors
+      are experimental evidence; remaining process responses are provisional synthetic
+      relationships. Outputs must not be used as manufacturing evidence.
     </div>
     """,
     unsafe_allow_html=True,
@@ -132,11 +137,12 @@ st.markdown(
 
 with st.sidebar:
     st.markdown("## Model status")
-    st.success("v0.3 pipeline + v0.3.1 evidence active")
+    st.success("v0.3.2 modular pipeline active")
     st.caption(f"Training data: {len(mock_data):,} mock batches")
     st.caption("Capacity surface uses 6 quantitative supplied rows")
     st.caption("Broader screen: 25 transcribed rows, missing values preserved")
-    st.caption("PVP HMW correction: 4 supplied anchors")
+    st.caption("PVP HMW evidence: 4 supplied anchors")
+    st.caption("Ultrasonic power and feed flow are separate")
     st.markdown("---")
     st.markdown("### Fixed conditions")
     st.markdown(
@@ -155,49 +161,71 @@ with st.sidebar:
     st.caption(f"Version {APP_VERSION} · Mock-data exploration only")
 
 
-def formulation_inputs() -> dict[str, float]:
+MODEL_SCOPES = (
+    "Full process simulator",
+    "Formulation stability",
+    "Ultrasonic spray drying",
+    "Hardening and final drying",
+    "Milling and MCT loading",
+)
+
+
+def _enabled(scope: str, stage: str) -> bool:
+    return scope == "Full process simulator" or scope == stage
+
+
+def formulation_inputs(scope: str) -> dict[str, float]:
+    formulation_enabled = _enabled(scope, "Formulation stability")
+    spray_enabled = _enabled(scope, "Ultrasonic spray drying")
+    hardening_enabled = _enabled(scope, "Hardening and final drying")
+    loading_enabled = _enabled(scope, "Milling and MCT loading")
     st.markdown('<div class="stage-label">01 · Feed formulation</div>', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     with c1:
-        feed_igg = st.slider("IgG in feed (mg/mL)", 45.0, 75.0, defaults["feed_igg_mg_ml"], 1.0)
-        sucrose = st.slider("Sucrose (mg/mL)", 0.0, 10.0, defaults["sucrose_mg_ml"], 0.25)
+        feed_igg = st.slider("IgG in feed (mg/mL)", 45.0, 75.0, defaults["feed_igg_mg_ml"], 1.0, disabled=not formulation_enabled)
+        sucrose = st.slider("Sucrose (mg/mL)", 0.0, 10.0, defaults["sucrose_mg_ml"], 0.25, disabled=not formulation_enabled)
     with c2:
-        trehalose = st.slider("Trehalose (mg/mL)", 0.0, 30.0, defaults["trehalose_mg_ml"], 0.5)
-        hpbcd = st.slider("HPBCD (mg/mL)", 0.0, 15.0, defaults["hpbcd_mg_ml"], 0.25)
+        trehalose = st.slider("Trehalose (mg/mL)", 0.0, 30.0, defaults["trehalose_mg_ml"], 0.5, disabled=not formulation_enabled)
+        hpbcd = st.slider("HPBCD (mg/mL)", 0.0, 15.0, defaults["hpbcd_mg_ml"], 0.25, disabled=not formulation_enabled)
     with c3:
-        pvp = st.slider("PVP (mg/mL)", 0.0, 25.0, defaults["pvp_mg_ml"], 0.5)
+        pvp = st.slider("PVP (mg/mL)", 0.0, 25.0, defaults["pvp_mg_ml"], 0.5, disabled=not (formulation_enabled or loading_enabled))
         feed_visc = st.slider(
-            "Initial feed viscosity (mPa·s)", 10.0, 80.0, defaults["feed_viscosity_mpas"], 1.0
+            "Initial feed viscosity (mPa·s)", 10.0, 80.0, defaults["feed_viscosity_mpas"], 1.0,
+            disabled=not (formulation_enabled or spray_enabled),
         )
 
     st.markdown('<div class="stage-label">02 · Process</div>', unsafe_allow_html=True)
-    p1, p2, p3, p4 = st.columns(4)
+    p1, p2, p3, p4, p5 = st.columns(5)
     with p1:
-        spray = st.radio("Spray flow", SPRAY_LEVELS, horizontal=True, format_func=lambda x: f"{x} rpm")
+        power = st.radio("Ultrasonic power", ULTRASONIC_POWER_LEVELS, horizontal=True, format_func=lambda x: f"{x}%", disabled=not spray_enabled)
     with p2:
-        hardening = st.select_slider("Hardening time", options=HARDENING_LEVELS, value=60, format_func=lambda x: f"{x} min")
+        feed_flow = st.radio("Feed flow", FEED_FLOW_LEVELS, horizontal=True, format_func=lambda x: f"{x} rpm", disabled=not spray_enabled)
     with p3:
+        hardening = st.select_slider("Hardening time", options=HARDENING_LEVELS, value=60, format_func=lambda x: f"{x} min", disabled=not hardening_enabled)
+    with p4:
         ea_ratio = st.select_slider(
             "Ethyl acetate : powder ratio",
             options=EA_RATIO_LEVELS,
             value=0,
             format_func=lambda x: {-1: "Low (−1)", 0: "Center (0)", 1: "High (+1)"}[x],
+            disabled=not hardening_enabled,
         )
-    with p4:
-        drying = st.radio("Final drying", DRYING_LEVELS, index=1, horizontal=True, format_func=lambda x: f"{x} h")
+    with p5:
+        drying = st.radio("Final drying", DRYING_LEVELS, index=1, horizontal=True, format_func=lambda x: f"{x} h", disabled=not hardening_enabled)
 
     st.markdown('<div class="stage-label">03 · Baseline quality and MCT loading</div>', unsafe_allow_html=True)
     b1, b2, b3, b4 = st.columns(4)
     with b1:
-        feed_hmw = st.number_input("Feed HMW area%", 0.0, 10.0, defaults["feed_hmw_pct"], 0.05)
+        feed_hmw = st.number_input("Feed HMW area%", 0.0, 10.0, defaults["feed_hmw_pct"], 0.05, disabled=not (formulation_enabled or spray_enabled))
     with b2:
-        feed_monomer = st.number_input("Feed monomer area%", 80.0, 100.0, defaults["feed_monomer_pct"], 0.05)
+        feed_monomer = st.number_input("Feed monomer area%", 80.0, 100.0, defaults["feed_monomer_pct"], 0.05, disabled=not (formulation_enabled or spray_enabled))
     with b3:
         powder_added = st.number_input(
-            "Dried powder added (mg)", 100.0, 5_000.0, float(defaults["powder_added_mg"]), 25.0
+            "Dried powder added (mg)", 100.0, 5_000.0, float(defaults["powder_added_mg"]), 25.0,
+            disabled=not loading_enabled,
         )
     with b4:
-        mct_volume = st.number_input("MCT volume (mL)", 0.10, 5.00, defaults["mct_volume_ml"], 0.05)
+        mct_volume = st.number_input("MCT volume (mL)", 0.10, 5.00, defaults["mct_volume_ml"], 0.05, disabled=not loading_enabled)
 
     return {
         "feed_igg_mg_ml": feed_igg,
@@ -206,7 +234,8 @@ def formulation_inputs() -> dict[str, float]:
         "hpbcd_mg_ml": hpbcd,
         "pvp_mg_ml": pvp,
         "feed_viscosity_mpas": feed_visc,
-        "spray_flow_rpm": spray,
+        "ultrasonic_power_pct": power,
+        "feed_flow_rpm": feed_flow,
         "hardening_time_min": hardening,
         "ea_powder_ratio_code": ea_ratio,
         "drying_time_h": drying,
@@ -217,10 +246,18 @@ def formulation_inputs() -> dict[str, float]:
     }
 
 
-tabs = st.tabs(["Batch explorer", "Variable effects", "Pareto lab"])
+scope = st.selectbox(
+    "Model scope",
+    MODEL_SCOPES,
+    help="Only variables belonging to the selected unit-operation model remain adjustable; the full simulator keeps every stage connected.",
+)
+if scope != "Full process simulator":
+    st.info(f"{scope} scope active. Inputs from other stages are locked at the reference condition.")
+
+tabs = st.tabs(["Batch explorer", "Variable effects", "Stage model status", "Pareto lab"])
 
 with tabs[0]:
-    batch = formulation_inputs()
+    batch = formulation_inputs(scope)
     frame = pd.DataFrame([batch])
     enriched = add_derived_features(frame)
     prediction = models.predict(frame).iloc[0]
@@ -236,19 +273,19 @@ with tabs[0]:
     r2.metric(
         "Aggregation / HMW",
         f"{prediction['final_hmw_pct']:.2f}%",
-        f"mock P05–P95 {prediction['final_hmw_p05']:.2f}–{prediction['final_hmw_p95']:.2f}%",
+        f"process-induced change {prediction['delta_hmw_pct']:+.2f}%",
         delta_color="off",
     )
     r3.metric(
         "Monomer",
         f"{prediction['final_monomer_pct']:.2f}%",
-        f"mock P05–P95 {prediction['final_monomer_p05']:.2f}–{prediction['final_monomer_p95']:.2f}%",
+        f"process-induced change {prediction['delta_monomer_pct']:+.2f}%",
         delta_color="off",
     )
     r4.metric(
         "MCT suspension viscosity",
         f"{prediction['final_viscosity_mpas']:,.0f} mPa·s",
-        f"mock P05–P95 {prediction['final_viscosity_p05']:,.0f}–{prediction['final_viscosity_p95']:,.0f}",
+        "Provisional synthetic relationship",
         delta_color="off",
     )
 
@@ -292,6 +329,45 @@ with tabs[0]:
             "The reported 400 and 550 mg/mL successes are lower-bound anchors, not exact maxima."
         )
 
+    st.markdown("### Evidence and spray-block status")
+    evidence_table = pd.DataFrame(
+        {
+            "Output / block": [
+                "Nominal IgG",
+                "Attainable concentration",
+                "Final HMW / monomer",
+                "Spray recovery",
+                "Spray particle size",
+                "Spray-specific aggregation coefficient",
+                "Ultrasonic nozzle risk",
+            ],
+            "Evidence class": [
+                "Mass balance",
+                prediction["capacity_evidence_status"],
+                prediction["quality_evidence_status"],
+                "Provisional assumption",
+                "Not yet modelled",
+                "Not yet calibrated",
+                "Observed process warning",
+            ],
+            "Result / status": [
+                f"{prediction['nominal_igg_mg_ml']:.0f} mg/mL",
+                f"{prediction['predicted_achievable_igg_mg_ml']:.0f} mg/mL",
+                f"ΔHMW {prediction['delta_hmw_pct']:+.2f}%; Δmonomer {prediction['delta_monomer_pct']:+.2f}%",
+                f"{prediction['provisional_spray_recovery_pct']:.1f}%",
+                prediction["particle_size_calibration_status"],
+                prediction["spray_agg_calibration_status"],
+                prediction["thermal_clogging_risk"],
+            ],
+        }
+    )
+    st.dataframe(evidence_table, width="stretch", hide_index=True)
+    st.caption(
+        f"Nearest formulation distance: {prediction['nearest_formulation_distance']:.2f} scaled units; "
+        f"supporting quantitative formulation observations: {int(prediction['supporting_formulation_observations'])}. "
+        "Distance is an evidence descriptor, not a confidence interval."
+    )
+
     with st.expander("Mass-balance details", expanded=False):
         mass_table = pd.DataFrame(
             {
@@ -299,8 +375,8 @@ with tabs[0]:
                     "Total feed solids",
                     "Initial IgG mass",
                     "Theoretical IgG dry fraction",
-                    "Mock spray-dried powder recovered",
-                    "Mock final powder after hardening/drying",
+                    "Provisional spray-dried powder recovered",
+                    "Provisional final powder after hardening/drying",
                     "Powder loaded into MCT",
                     "Experimental-surface support",
                     "Empirical loading capacity",
@@ -311,8 +387,8 @@ with tabs[0]:
                     f"{enriched.loc[0, 'initial_dry_solids_mass_g']:.2f} g",
                     f"{enriched.loc[0, 'initial_igg_mass_g']:.2f} g",
                     f"{100 * enriched.loc[0, 'igg_dry_fraction']:.1f}%",
-                    f"{enriched.loc[0, 'mock_spray_powder_mass_g']:.2f} g",
-                    f"{enriched.loc[0, 'mock_final_powder_mass_g']:.2f} g",
+                    f"{enriched.loc[0, 'provisional_spray_powder_mass_g']:.2f} g",
+                    f"{enriched.loc[0, 'provisional_final_powder_mass_g']:.2f} g",
                     f"{batch['powder_added_mg'] / 1_000:.2f} g",
                     f"{100 * prediction['experimental_capacity_support']:.0f}% proximity",
                     f"{prediction['interaction_capacity_mg_ml']:.0f} mg/mL",
@@ -351,12 +427,24 @@ with tabs[1]:
         "HPBCD concentration": ("hpbcd_mg_ml", np.linspace(0, 15, 61)),
         "PVP concentration": ("pvp_mg_ml", np.linspace(0, 25, 51)),
         "Initial feed viscosity": ("feed_viscosity_mpas", np.linspace(10, 80, 31)),
-        "Spray flow": ("spray_flow_rpm", np.array(SPRAY_LEVELS)),
+        "Ultrasonic power": ("ultrasonic_power_pct", np.array(ULTRASONIC_POWER_LEVELS)),
+        "Feed flow": ("feed_flow_rpm", np.array(FEED_FLOW_LEVELS)),
         "Hardening time": ("hardening_time_min", np.array(HARDENING_LEVELS)),
         "Ethyl acetate : powder ratio": ("ea_powder_ratio_code", np.array(EA_RATIO_LEVELS)),
         "Final drying time": ("drying_time_h", np.array(DRYING_LEVELS)),
         "Powder added": ("powder_added_mg", np.linspace(500, 2500, 31)),
     }
+    scope_variables = {
+        "Formulation stability": {"sucrose_mg_ml", "trehalose_mg_ml", "hpbcd_mg_ml", "pvp_mg_ml", "feed_viscosity_mpas"},
+        "Ultrasonic spray drying": {"ultrasonic_power_pct", "feed_flow_rpm", "feed_viscosity_mpas"},
+        "Hardening and final drying": {"hardening_time_min", "ea_powder_ratio_code", "drying_time_h"},
+        "Milling and MCT loading": {"pvp_mg_ml", "powder_added_mg"},
+    }
+    if scope != "Full process simulator":
+        allowed = scope_variables[scope]
+        effect_options = {
+            label: item for label, item in effect_options.items() if item[0] in allowed
+        }
     selected_label = st.selectbox("Variable to sweep", list(effect_options))
     variable, sweep_values = effect_options[selected_label]
     sensitivity = sensitivity_frame(models, defaults, variable, sweep_values)
@@ -383,10 +471,88 @@ with tabs[1]:
         width="stretch",
         hide_index=True,
     )
-    st.info("These curves reflect the synthetic equation and surrogate model—not a measured causal relationship.")
+    st.info(
+        "These curves show local empirical interpolation where anchors exist and provisional "
+        "synthetic relationships elsewhere. They are not measured causal effects."
+    )
 
 with tabs[2]:
+    st.subheader("Modular unit-operation model status")
+    st.caption("The output state of each block becomes the input state of the next block.")
+    stage_table = pd.DataFrame(
+        {
+            "Unit-operation model": [
+                "1 · Formulation stability",
+                "2 · Ultrasonic spray drying",
+                "3 · EA hardening / final drying",
+                "4 · Milling / MCT loading",
+            ],
+            "Active variables": [
+                "Sucrose, trehalose, HPBCD, PVP",
+                "Ultrasonic power, feed flow, feed viscosity, total solids",
+                "EA:powder ratio, hardening time, drying time",
+                "PVP, powder loading, MCT volume; future particle size/moisture",
+            ],
+            "Primary outputs": [
+                "Local attainable concentration; final-quality anchors",
+                "Recovery and drying severity; future moisture/particle size/ΔHMW",
+                "Provisional recovery and combined quality change",
+                "Milling recovery, concentration, viscosity, loading status",
+            ],
+            "Current evidence": [
+                "6 quantitative sucrose–HPBCD anchors + 4 PVP HMW anchors",
+                "Power observations support heating/clogging warning; physical CQAs pending",
+                "Synthetic/provisional until matched intermediate measurements exist",
+                "3 PVP milling anchors + 2 composition-specific loading lower bounds",
+            ],
+        }
+    )
+    st.dataframe(stage_table, width="stretch", hide_index=True)
+    st.markdown(
+        r"""
+        **Spray-drying transformation block**
+
+        $$m_{powder,out}=\eta_{SD}\,m_{dry\ solids,in}$$
+
+        $$X_{moisture,out}=X_{eq}+(X_{moisture,in}-X_{eq})e^{-K_{dry,SD}}$$
+
+        $$M_{out}=M_{in}e^{-K_{agg,SD}}$$
+
+        In v0.3.2, $\eta_{SD}$ and $K_{dry,SD}$ are provisional severity relationships.
+        $K_{agg,SD}$ remains unavailable because SEC-HPLC immediately before and after spraying
+        has not yet been supplied. It must not be interpreted from the final HMW response.
+        """
+    )
+    st.warning(
+        "The model does not yet convert ultrasonic power into particle size. Higher power → "
+        "stronger atomization → potentially smaller droplets remains a mechanistic hypothesis "
+        "until droplet or particle-size measurements are paired with each batch."
+    )
+    st.markdown("### Supplied ultrasonic-power observations")
+    power_evidence = pd.read_csv(POWER_EVIDENCE_PATH)
+    st.dataframe(
+        power_evidence[
+            [
+                "composition",
+                "ultrasonic_power_pct",
+                "feed_flow_rpm",
+                "suspension_mg_ml",
+                "aggregation_pct",
+                "interpretation",
+            ]
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption(
+        "These four rows support local comparison and the 40% heating/clogging warning. "
+        "They are not used to fit a universal power coefficient."
+    )
+
+with tabs[3]:
     st.subheader("Pareto candidate explorer")
+    if scope != "Full process simulator":
+        st.info("Pareto search always evaluates the connected full-process prototype, independent of the selected single-stage input scope.")
     st.caption(
         "Frontier objectives: minimize HMW, maximize monomer, and minimize viscosity. Achievable IgG is constrained to the 250–650 mg/mL v0.3 domain."
     )
@@ -432,7 +598,8 @@ with tabs[2]:
         "trehalose_mg_ml",
         "hpbcd_mg_ml",
         "pvp_mg_ml",
-        "spray_flow_rpm",
+        "ultrasonic_power_pct",
+        "feed_flow_rpm",
         "hardening_time_min",
         "ea_powder_ratio_code",
         "drying_time_h",
